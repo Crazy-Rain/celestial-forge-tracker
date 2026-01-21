@@ -1,0 +1,540 @@
+/* Celestial Forge Tracker Extension v2.0 Styles */
+
+/* ============================================
+   BASE STYLES
+   ============================================ */
+
+#celestial-forge-settings {
+    margin-top: 10px;
+}
+
+#celestial-forge-settings .inline-drawer-content {
+    padding: 10px;
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+/* ============================================
+   TAB NAVIGATION
+   ============================================ */
+
+.forge-tabs {
+    display: flex;
+    gap: 5px;
+    margin-bottom: 10px;
+    flex-wrap: wrap;
+}
+
+.forge-tab {
+    padding: 8px 12px;
+    background: var(--SmartThemeBlurTintColor);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 5px 5px 0 0;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-size: 12px;
+}
+
+.forge-tab:hover {
+    background: var(--SmartThemeQuoteColor);
+}
+
+.forge-tab.active {
+    background: var(--SmartThemeBotMesBlurTintColor);
+    border-bottom-color: transparent;
+    font-weight: bold;
+}
+
+.forge-tab-content {
+    display: none;
+}
+
+.forge-tab-content.active {
+    display: block;
+}
+
+/* ============================================
+   PANELS
+   ============================================ */
+
+.forge-panel {
+    margin-bottom: 15px;
+    padding: 12px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 5px;
+    background: var(--SmartThemeBlurTintColor);
+}
+
+.forge-panel h4 {
+    margin: 0 0 10px 0;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    color: var(--SmartThemeBodyColor);
+    font-size: 14px;
+}
+
+/* ============================================
+   STAT ROWS
+   ============================================ */
+
+.forge-stat-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+}
+
+.forge-stat-row label {
+    min-width: 100px;
+    font-weight: 500;
+    font-size: 12px;
+}
+
+/* ============================================
+   INPUT STYLES
+   ============================================ */
+
+.forge-input-tiny {
+    width: 50px !important;
+}
+
+.forge-input-small {
+    width: 70px !important;
+}
+
+.forge-input-medium {
+    width: 100px !important;
+}
+
+.forge-input-wide {
+    flex: 1;
+    min-width: 150px;
+}
+
+.forge-textarea {
+    width: 100%;
+    min-height: 60px;
+    resize: vertical;
+    margin: 5px 0;
+}
+
+/* ============================================
+   BUTTON STYLES
+   ============================================ */
+
+.forge-btn-small {
+    padding: 4px 8px !important;
+    font-size: 11px !important;
+    min-width: 30px;
+}
+
+.forge-btn-primary {
+    background: var(--SmartThemeQuoteColor) !important;
+    font-weight: bold;
+}
+
+.forge-btn-primary:hover {
+    filter: brightness(1.2);
+}
+
+.forge-btn-danger {
+    background: #8b0000 !important;
+    color: white !important;
+}
+
+.forge-btn-danger:hover {
+    background: #a00 !important;
+}
+
+/* ============================================
+   PROGRESS BAR
+   ============================================ */
+
+.forge-progress-bar {
+    flex: 1;
+    max-width: 150px;
+    height: 20px;
+    background: var(--SmartThemeBorderColor);
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.forge-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #4a90d9, #67b26f);
+    transition: width 0.3s ease;
+    border-radius: 10px;
+}
+
+/* ============================================
+   HIGHLIGHT TEXT
+   ============================================ */
+
+.forge-highlight {
+    font-weight: bold;
+    color: var(--SmartThemeQuoteColor);
+    font-size: 14px;
+}
+
+.forge-pending {
+    color: #d9a04a;
+}
+
+.forge-ready {
+    color: #67b26f;
+    font-weight: bold;
+    animation: forge-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes forge-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+/* ============================================
+   PERK LIST
+   ============================================ */
+
+.forge-scrollable {
+    max-height: 300px;
+    overflow-y: auto;
+    margin: 10px 0;
+}
+
+.forge-perk-item {
+    padding: 10px;
+    margin-bottom: 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 5px;
+    background: var(--SmartThemeBlurTintColor);
+    position: relative;
+    transition: all 0.2s;
+}
+
+.forge-perk-item:hover {
+    border-color: var(--SmartThemeQuoteColor);
+}
+
+.forge-perk-item.toggleable {
+    border-left: 3px solid #888;
+}
+
+.forge-perk-item.toggleable.active {
+    border-left-color: #67b26f;
+}
+
+.forge-perk-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.forge-perk-header strong {
+    color: var(--SmartThemeBodyColor);
+    font-size: 13px;
+}
+
+.forge-perk-cost {
+    color: var(--SmartThemeQuoteColor);
+    font-size: 12px;
+}
+
+.forge-perk-desc {
+    margin-top: 5px;
+    font-size: 11px;
+    color: var(--SmartThemeEmColor);
+    line-height: 1.4;
+}
+
+.forge-perk-flags {
+    margin-top: 5px;
+    font-size: 10px;
+    color: var(--SmartThemeQuoteColor);
+    font-style: italic;
+}
+
+.forge-perk-meta {
+    margin-top: 5px;
+    font-size: 9px;
+    color: #666;
+}
+
+.forge-remove-btn {
+    margin-left: auto;
+    padding: 2px 8px !important;
+    font-size: 14px !important;
+    background: transparent !important;
+    border: none !important;
+    color: #888;
+    cursor: pointer;
+}
+
+.forge-remove-btn:hover {
+    color: #f00;
+}
+
+/* ============================================
+   TOGGLE BUTTONS
+   ============================================ */
+
+.forge-toggle-btn {
+    padding: 4px 10px !important;
+    font-size: 11px !important;
+    border-radius: 15px !important;
+    background: #555 !important;
+    transition: all 0.2s;
+}
+
+.forge-toggle-btn.active {
+    background: #2d5a27 !important;
+}
+
+.forge-toggle-btn:hover {
+    filter: brightness(1.2);
+}
+
+.forge-toggle-item {
+    display: inline-block;
+    margin: 3px;
+}
+
+/* ============================================
+   ARCHIVE GRID
+   ============================================ */
+
+.forge-archive-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 8px;
+}
+
+.forge-archive-item {
+    padding: 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 5px;
+    background: var(--SmartThemeBlurTintColor);
+    cursor: pointer;
+    transition: all 0.2s;
+    position: relative;
+}
+
+.forge-archive-item:hover {
+    border-color: var(--SmartThemeQuoteColor);
+    transform: translateY(-2px);
+}
+
+.forge-archive-name {
+    font-weight: bold;
+    font-size: 12px;
+    color: var(--SmartThemeBodyColor);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.forge-archive-cost {
+    font-size: 11px;
+    color: var(--SmartThemeQuoteColor);
+}
+
+.forge-archive-flags {
+    font-size: 9px;
+    color: #888;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.forge-archive-actions {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    display: flex;
+    gap: 3px;
+    opacity: 0;
+    transition: opacity 0.2s;
+}
+
+.forge-archive-item:hover .forge-archive-actions {
+    opacity: 1;
+}
+
+.forge-acquire-btn, .forge-delete-archive-btn {
+    padding: 2px 6px !important;
+    font-size: 12px !important;
+    min-width: 24px;
+}
+
+.forge-acquire-btn {
+    background: #2d5a27 !important;
+}
+
+.forge-delete-archive-btn {
+    background: #5a2727 !important;
+}
+
+/* ============================================
+   CHECKPOINTS
+   ============================================ */
+
+.forge-checkpoint-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px;
+    margin-bottom: 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 5px;
+    background: var(--SmartThemeBlurTintColor);
+}
+
+.forge-checkpoint-info {
+    flex: 1;
+}
+
+.forge-checkpoint-info strong {
+    color: var(--SmartThemeBodyColor);
+    font-size: 12px;
+}
+
+.forge-checkpoint-meta {
+    font-size: 10px;
+    color: var(--SmartThemeEmColor);
+    margin-top: 3px;
+}
+
+.forge-checkpoint-date {
+    font-size: 9px;
+    color: #666;
+}
+
+.forge-checkpoint-actions {
+    display: flex;
+    gap: 5px;
+}
+
+.forge-restore-btn, .forge-delete-checkpoint-btn {
+    padding: 4px 8px !important;
+    font-size: 12px !important;
+}
+
+/* ============================================
+   ADD PERK FORM
+   ============================================ */
+
+.forge-add-perk-form {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.forge-add-perk-form input[type="text"],
+.forge-add-perk-form input[type="number"] {
+    padding: 8px;
+}
+
+/* ============================================
+   ACTIONS ROW
+   ============================================ */
+
+.forge-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+}
+
+/* ============================================
+   CHECKBOX LABELS
+   ============================================ */
+
+.forge-checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.forge-checkbox-label input[type="checkbox"] {
+    cursor: pointer;
+}
+
+/* ============================================
+   MISC
+   ============================================ */
+
+.forge-empty {
+    text-align: center;
+    padding: 20px;
+    color: #666;
+    font-style: italic;
+}
+
+.forge-hint {
+    font-size: 11px;
+    color: #888;
+    margin: 5px 0 10px 0;
+    font-style: italic;
+}
+
+.forge-code {
+    font-family: monospace;
+    font-size: 11px;
+    background: #1a1a1a;
+    padding: 8px;
+    border-radius: 3px;
+    word-break: break-all;
+}
+
+/* ============================================
+   SCROLLBAR STYLING
+   ============================================ */
+
+.forge-scrollable::-webkit-scrollbar {
+    width: 8px;
+}
+
+.forge-scrollable::-webkit-scrollbar-track {
+    background: var(--SmartThemeBlurTintColor);
+    border-radius: 4px;
+}
+
+.forge-scrollable::-webkit-scrollbar-thumb {
+    background: var(--SmartThemeBorderColor);
+    border-radius: 4px;
+}
+
+.forge-scrollable::-webkit-scrollbar-thumb:hover {
+    background: var(--SmartThemeQuoteColor);
+}
+
+/* ============================================
+   RESPONSIVE ADJUSTMENTS
+   ============================================ */
+
+@media (max-width: 600px) {
+    .forge-tabs {
+        flex-direction: column;
+    }
+    
+    .forge-tab {
+        border-radius: 5px;
+    }
+    
+    .forge-archive-grid {
+        grid-template-columns: 1fr;
+    }
+    
+    .forge-stat-row {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    
+    .forge-stat-row label {
+        min-width: auto;
+    }
+}

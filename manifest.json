@@ -1,0 +1,13 @@
+{
+    "display_name": "Celestial Forge Tracker",
+    "loading_order": 10,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "Claude & LO",
+    "version": "2.0.0",
+    "homePage": "",
+    "auto_update": false,
+    "description": "Full-featured Celestial Forge progression system tracker with auto-detection, perk database, checkpoints, and per-chat state management."
+}
