@@ -25,7 +25,11 @@ const defaultSettings = {
     showNotifications: true,
     perkArchive: [],
     chatStates: {},
-    currentChatId: null
+    currentChatId: null,
+    // NEW: Injection settings
+    injectSimTracker: true,        // Also inject SimTracker JSON format
+    aggressiveInjection: false,    // Prepend directly to prompt (for stubborn models)
+    promptPosition: 0              // 0 = in-chat (prominent), 1 = after scenario (buried)
 };
 
 const defaultChatState = {
@@ -49,31 +53,50 @@ const defaultChatState = {
 // REGEX PATTERNS FOR AUTO-DETECTION
 // ============================================
 
+// Standard markdown format patterns (original)
 const PERK_PATTERNS = [
     /\*\*([A-Z][A-Z\s\-\']+)\*\*\s*\((\d+)\s*CP\)\s*[-–—:]\s*([^\[]+?)(?:\[([^\]]+)\])?/gi,
     /\[ACQUIRED:\s*([A-Z][A-Z\s\-\']+)\s*[-–—]\s*(\d+)\s*CP\]/gi,
     /(?:you\s+)?gain(?:ed|s)?\s+\*\*([A-Z][A-Z\s\-\']+)\*\*\s*\((\d+)\s*CP\)/gi,
     /^([A-Z][A-Z\s\-\']{3,})\s*\((\d+)\s*CP\)\s*(?:\[([^\]]+)\])?\s*[-–—:]/gim,
-    /(?:forge\s+grants|acquired|unlocked|gained):\s*\*?\*?([A-Z][A-Z\s\-\']+)\*?\*?\s*\((\d+)\s*CP\)/gi
+    /(?:forge\s+grants|acquired|unlocked|gained):\s*\*?\*?([A-Z][A-Z\s\-\']+)\*?\*?\s*\((\d+)\s*CP\)/gi,
+    // NEW: Loomledger HTML format patterns for Opus/Lumia output
+    /<perk[^>]*>([^<]+)<\/perk>\s*\((\d+)\s*CP\)/gi,
+    /<acquired[^>]*>([^<]+)<\/acquired>\s*[-–—:]\s*(\d+)\s*CP/gi,
+    /<span[^>]*class=["']?perk["']?[^>]*>([^<]+)<\/span>\s*\((\d+)\s*CP\)/gi,
+    /perk[_\-]?name['":\s]+([A-Za-z][A-Za-z\s\-\']+)['"]*[,\s]+cost['":\s]+(\d+)/gi
 ];
 
 const CP_GAIN_PATTERNS = [
     /\+(\d+)\s*(?:Bonus\s*)?CP/gi,
     /Award:\s*\+?(\d+)\s*(?:Bonus\s*)?CP/gi,
     /\[FORGE\s+RESONANCE[^\]]*\].*?\+(\d+)\s*(?:Bonus\s*)?CP/gi,
-    /(?:gains?|earned?|receives?|awarded?)\s+(\d+)\s*(?:Bonus\s*)?CP/gi
+    /(?:gains?|earned?|receives?|awarded?)\s+(\d+)\s*(?:Bonus\s*)?CP/gi,
+    // NEW: Loomledger HTML/JSON format patterns
+    /total[_\-]?cp['":\s]+(\d+)/gi,
+    /<cp[^>]*>(\d+)<\/cp>/gi,
+    /cp[_\-]?earned['":\s]+(\d+)/gi
 ];
 
 const CORRUPTION_PATTERNS = [
     /\+(\d+)\s*Corruption/gi,
     /Corruption:\s*\+(\d+)/gi,
-    /[-–—](\d+)\s*Corruption/gi
+    /[-–—](\d+)\s*Corruption/gi,
+    // NEW: Loomledger formats
+    /corruption['":\s]+(\d+)/gi,
+    /<corruption[^>]*>(\d+)<\/corruption>/gi
 ];
 
 const SANITY_PATTERNS = [
     /\+(\d+)\s*Sanity\s*(?:Erosion|Cost)/gi,
-    /Sanity\s*(?:Erosion|Cost):\s*\+(\d+)/gi
+    /Sanity\s*(?:Erosion|Cost):\s*\+(\d+)/gi,
+    // NEW: Loomledger formats
+    /sanity[_\-]?erosion['":\s]+(\d+)/gi,
+    /<sanity[^>]*>(\d+)<\/sanity>/gi
 ];
+
+// NEW: Loomledger block parser - extracts full state from HTML ledger
+const LOOMLEDGER_PATTERN = /<loomledger[^>]*>([\s\S]*?)<\/loomledger>/gi;
 
 // ============================================
 // SETTINGS MANAGEMENT
@@ -480,11 +503,144 @@ function parseMessageForSanity(messageText) {
     return change;
 }
 
+// NEW: Parse loomledger HTML blocks from Opus/Lumia output
+function parseLoomledger(messageText) {
+    const result = {
+        perks: [],
+        totalCP: null,
+        availableCP: null,
+        corruption: null,
+        sanity: null,
+        found: false
+    };
+    
+    LOOMLEDGER_PATTERN.lastIndex = 0;
+    const ledgerMatch = LOOMLEDGER_PATTERN.exec(messageText);
+    
+    if (!ledgerMatch) {
+        // Try alternate formats (forge_state, state_block, etc)
+        const altPatterns = [
+            /<forge[_\-]?state[^>]*>([\s\S]*?)<\/forge[_\-]?state>/gi,
+            /<state[_\-]?block[^>]*>([\s\S]*?)<\/state[_\-]?block>/gi,
+            /```forge\s*([\s\S]*?)```/gi,
+            /```json[^\n]*forge[^\n]*\s*([\s\S]*?)```/gi
+        ];
+        
+        for (const alt of altPatterns) {
+            alt.lastIndex = 0;
+            const altMatch = alt.exec(messageText);
+            if (altMatch) {
+                result.found = true;
+                try {
+                    // Try parsing as JSON
+                    const jsonData = JSON.parse(altMatch[1]);
+                    if (jsonData.characters?.[0]) {
+                        const char = jsonData.characters[0];
+                        result.totalCP = char.total_cp;
+                        result.availableCP = char.available_cp;
+                        result.corruption = char.corruption;
+                        result.sanity = char.sanity;
+                    }
+                } catch (e) {
+                    // Not JSON, try regex extraction
+                    parseStateFromText(altMatch[1], result);
+                }
+                break;
+            }
+        }
+    } else {
+        result.found = true;
+        parseStateFromText(ledgerMatch[1], result);
+    }
+    
+    // Also scan full message for inline state mentions
+    if (!result.found) {
+        parseStateFromText(messageText, result);
+    }
+    
+    return result;
+}
+
+function parseStateFromText(text, result) {
+    // Extract CP values
+    const cpMatch = text.match(/(?:total[_\s\-]?cp|cp[_\s\-]?total)['":\s]*(\d+)/i);
+    if (cpMatch) result.totalCP = parseInt(cpMatch[1]);
+    
+    const availMatch = text.match(/(?:available[_\s\-]?cp|cp[_\s\-]?available)['":\s]*(\d+)/i);
+    if (availMatch) result.availableCP = parseInt(availMatch[1]);
+    
+    // Extract corruption
+    const corruptMatch = text.match(/corruption['":\s]*(\d+)/i);
+    if (corruptMatch) result.corruption = parseInt(corruptMatch[1]);
+    
+    // Extract sanity
+    const sanityMatch = text.match(/(?:sanity[_\s\-]?erosion|sanity)['":\s]*(\d+)/i);
+    if (sanityMatch) result.sanity = parseInt(sanityMatch[1]);
+    
+    // Extract perks from various formats
+    const perkPatterns = [
+        /<li[^>]*>([^<]+)\s*\((\d+)\s*CP\)/gi,
+        /•\s*([A-Za-z][A-Za-z\s\-\']+)\s*\((\d+)\s*CP\)/g,
+        /\d+\.\s*([A-Za-z][A-Za-z\s\-\']+)\s*\((\d+)\s*CP\)/g
+    ];
+    
+    for (const pattern of perkPatterns) {
+        pattern.lastIndex = 0;
+        let match;
+        while ((match = pattern.exec(text)) !== null) {
+            const name = match[1]?.trim();
+            const cost = parseInt(match[2]) || 0;
+            if (name && name.length > 2 && cost > 0) {
+                if (!result.perks.find(p => p.name.toLowerCase() === name.toLowerCase())) {
+                    result.perks.push({ name, cost, description: '', flags: [] });
+                }
+            }
+        }
+    }
+    
+    return result;
+}
+
 function processAIMessage(messageText) {
     const settings = getSettings();
     const state = getCurrentState();
     if (!state || !settings.enabled) return;
     
+    // NEW: First try parsing loomledger format
+    const ledgerData = parseLoomledger(messageText);
+    if (ledgerData.found) {
+        log('Detected loomledger/forge state in AI output');
+        
+        // Sync corruption if detected and different
+        if (ledgerData.corruption !== null && ledgerData.corruption !== state.corruption) {
+            const diff = ledgerData.corruption - state.corruption;
+            if (Math.abs(diff) <= 20) { // Sanity check - don't accept wild swings
+                modifyCorruption(diff);
+                log(`Synced corruption: ${state.corruption} -> ${ledgerData.corruption}`);
+            }
+        }
+        
+        // Sync sanity if detected and different
+        if (ledgerData.sanity !== null && ledgerData.sanity !== state.sanityErosion) {
+            const diff = ledgerData.sanity - state.sanityErosion;
+            if (Math.abs(diff) <= 20) {
+                modifySanity(diff);
+                log(`Synced sanity: ${state.sanityErosion} -> ${ledgerData.sanity}`);
+            }
+        }
+        
+        // Add any detected perks
+        for (const perkData of ledgerData.perks) {
+            const existing = state.acquiredPerks.find(p => 
+                p.name.toLowerCase() === perkData.name.toLowerCase()
+            );
+            if (!existing) {
+                addPerk(perkData.name, perkData.cost, perkData.description, perkData.flags, 'loomledger');
+            }
+        }
+    }
+    
+    // ALSO run standard pattern detection (catches both formats)
     if (settings.autoDetectPerks) {
         const detectedPerks = parseMessageForPerks(messageText);
         for (const perkData of detectedPerks) {
@@ -725,11 +881,43 @@ function onGenerationStarted() {
     const settings = getSettings();
     if (!settings.enabled) return;
     
+    const context = SillyTavern.getContext();
+    
+    // Generate both text status and SimTracker JSON format
     const forgeStatus = generateForgeStatus();
+    const simTrackerJSON = generateSimTrackerBlock();
+    
     if (forgeStatus) {
-        const context = SillyTavern.getContext();
-        // Inject into prompt via chat injection
-        context.setExtensionPrompt(MODULE_NAME, forgeStatus, 1, 0);
+        // FIXED: Use position 0 (in-chat/system level) for better visibility
+        // Position 0 = In-chat injection (prominent, AI sees it clearly)
+        // Position 1 = After scenario (can get buried)
+        // Depth 0 = At the end of injected content (most recent)
+        context.setExtensionPrompt(MODULE_NAME, forgeStatus, 0, 0);
+        log('Injected forge status at position 0');
+    }
+    
+    // ALSO inject SimTracker JSON format as a separate prompt
+    // Some lorebooks expect this format specifically
+    if (simTrackerJSON && settings.injectSimTracker !== false) {
+        const simPromptName = MODULE_NAME + '_simtracker';
+        context.setExtensionPrompt(simPromptName, simTrackerJSON, 0, 1);
+        log('Injected SimTracker JSON at position 0, depth 1');
+    }
+}
+
+// Alternative injection via GENERATE hook (more aggressive, for stubborn models)
+function onGenerateData(data) {
+    const settings = getSettings();
+    if (!settings.enabled) return;
+    
+    // Only use this if aggressive injection is enabled
+    if (settings.aggressiveInjection) {
+        const forgeStatus = generateForgeStatus();
+        if (forgeStatus && data.prompt) {
+            // Prepend to the prompt directly
+            data.prompt = `${forgeStatus}\n\n${data.prompt}`;
+            log('Aggressive injection: prepended forge status to prompt');
+        }
     }
 }
 
@@ -788,6 +976,7 @@ function createSettingsHtml() {
                     <div class="forge-actions">
                         <button class="menu_button" id="forge-roll-btn">⚡ Trigger Roll</button>
                         <button class="menu_button" id="forge-checkpoint-btn">📌 Checkpoint</button>
+                        <button class="menu_button" id="forge-copy-simtracker">📋 Copy SimTracker</button>
                     </div>
                 </div>
                 
@@ -832,6 +1021,14 @@ function createSettingsHtml() {
                         <input type="checkbox" id="forge-notifications" checked>
                         <span>Show Notifications</span>
                     </label>
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="forge-inject-simtracker" checked>
+                        <span>Inject SimTracker JSON</span>
+                    </label>
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="forge-aggressive">
+                        <span>Aggressive Injection (for stubborn models)</span>
+                    </label>
                     <div class="forge-stat">
                         <label>CP per Response:</label>
                         <input type="number" id="forge-cp-rate" value="10" min="1" style="width:60px">
@@ -844,6 +1041,7 @@ function createSettingsHtml() {
                         <button class="menu_button" id="forge-export">Export</button>
                         <button class="menu_button" id="forge-import">Import</button>
                         <button class="menu_button" id="forge-reset">Reset Chat</button>
+                        <button class="menu_button" id="forge-debug">Debug Injection</button>
                     </div>
                 </div>
                 
@@ -900,9 +1098,13 @@ function bindUIEvents() {
         }
     });
     
-    // Roll & Checkpoint
+    // Roll & Checkpoint & SimTracker
     $('#forge-roll-btn').off('click').on('click', triggerManualRoll);
     $('#forge-checkpoint-btn').off('click').on('click', () => createCheckpoint());
+    $('#forge-copy-simtracker').off('click').on('click', () => {
+        const date = prompt('Enter in-story date (e.g., "April 8th, 2011"):');
+        copySimTrackerJSON(date || '');
+    });
     
     // Add perk
     $('#forge-add-perk-btn').off('click').on('click', () => {
@@ -941,6 +1143,17 @@ function bindUIEvents() {
     $('#forge-notifications').off('change').on('change', function() {
         getSettings().showNotifications = $(this).prop('checked');
         saveSettings();
+    });
+    // NEW: Injection settings bindings
+    $('#forge-inject-simtracker').off('change').on('change', function() {
+        getSettings().injectSimTracker = $(this).prop('checked');
+        saveSettings();
+        log('SimTracker injection: ' + ($(this).prop('checked') ? 'enabled' : 'disabled'));
+    });
+    $('#forge-aggressive').off('change').on('change', function() {
+        getSettings().aggressiveInjection = $(this).prop('checked');
+        saveSettings();
+        log('Aggressive injection: ' + ($(this).prop('checked') ? 'enabled' : 'disabled'));
     });
     $('#forge-cp-rate').off('change').on('change', function() {
         getSettings().cpPerResponse = parseInt($(this).val()) || 10;
@@ -1011,6 +1224,38 @@ function bindUIEvents() {
             }
         }
     });
+    
+    // NEW: Debug button to show what's being injected
+    $('#forge-debug').off('click').on('click', () => {
+        const forgeStatus = generateForgeStatus();
+        const simTrackerJSON = generateSimTrackerBlock();
+        const settings = getSettings();
+        
+        const debugInfo = `=== CELESTIAL FORGE DEBUG INFO ===
+
+INJECTION SETTINGS:
+- Position: ${settings.promptPosition || 0} (0=in-chat/prominent, 1=after-scenario)
+- SimTracker Injection: ${settings.injectSimTracker !== false ? 'ENABLED' : 'DISABLED'}
+- Aggressive Mode: ${settings.aggressiveInjection ? 'ENABLED' : 'DISABLED'}
+
+=== FORGE STATUS (what Opus sees) ===
+${forgeStatus}
+
+=== SIMTRACKER JSON (alternate format) ===
+${simTrackerJSON}
+
+=== END DEBUG ===`;
+        
+        console.log(debugInfo);
+        
+        // Also show in a popup
+        const popup = document.createElement('div');
+        popup.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#1a1a2e;border:2px solid #6c5ce7;border-radius:10px;padding:20px;max-width:80vw;max-height:80vh;overflow:auto;z-index:10000;color:#fff;font-family:monospace;font-size:12px;white-space:pre-wrap;';
+        popup.innerHTML = `<button onclick="this.parentElement.remove()" style="position:absolute;top:5px;right:10px;background:#6c5ce7;border:none;color:#fff;padding:5px 10px;cursor:pointer;border-radius:5px;">Close</button><pre style="margin-top:30px;">${debugInfo.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>`;
+        document.body.appendChild(popup);
+        
+        toastr.info('Debug info shown! Also logged to console.', 'Celestial Forge');
+    });
 }
 
 function updateUI() {
@@ -1038,6 +1283,9 @@ function updateUI() {
     $('#forge-auto-perks').prop('checked', settings.autoDetectPerks);
     $('#forge-auto-cp').prop('checked', settings.autoDetectCP);
     $('#forge-notifications').prop('checked', settings.showNotifications);
+    // NEW: Injection settings
+    $('#forge-inject-simtracker').prop('checked', settings.injectSimTracker !== false);
+    $('#forge-aggressive').prop('checked', settings.aggressiveInjection === true);
     $('#forge-cp-rate').val(settings.cpPerResponse);
     $('#forge-threshold').val(settings.thresholdCP);
     
@@ -1143,14 +1391,90 @@ function updateCheckpointUI() {
             context.eventSource.on(context.eventTypes.MESSAGE_RECEIVED, onMessageReceived);
             context.eventSource.on(context.eventTypes.GENERATION_STARTED, onGenerationStarted);
             
+            // NEW: Also hook into GENERATE for aggressive injection option
+            if (context.eventTypes.GENERATE) {
+                context.eventSource.on(context.eventTypes.GENERATE, onGenerateData);
+            }
+            
             // Initial UI update
             setTimeout(updateUI, 500);
             
             log('Extension initialized!');
-            console.log(`[${MODULE_NAME}] Celestial Forge Tracker v3.0 loaded!`);
+            console.log(`[${MODULE_NAME}] Celestial Forge Tracker v3.1 loaded with enhanced injection!`);
         }
     }, 100);
 })();
+
+// ============================================
+// SIMTRACKER INTEGRATION
+// ============================================
+
+function generateSimTrackerJSON(inStoryDate = '') {
+    const state = getCurrentState();
+    const settings = getSettings();
+    if (!state) return null;
+    
+    const totalCP = getTotalCP(state);
+    const availableCP = getAvailableCP(state);
+    const thresholdProgress = totalCP % settings.thresholdCP;
+    const thresholdPercent = Math.round((thresholdProgress / settings.thresholdCP) * 100);
+    
+    // Build perks list (pipe-separated)
+    const perksList = state.acquiredPerks.map(p => `${p.name} (${p.cost} CP)`).join('|') || '';
+    
+    // Build active toggles list (comma-separated)
+    const activeToggles = state.activeToggles.join(', ') || '';
+    
+    // Pending perk info
+    const pendingRemaining = state.pendingPerk ? Math.max(0, state.pendingPerkCost - availableCP) : 0;
+    
+    const simData = {
+        worldData: {
+            current_date: inStoryDate || 'Unknown',
+            response_count: state.responseCount
+        },
+        characters: [
+            {
+                name: 'Smith',
+                total_cp: totalCP,
+                available_cp: availableCP,
+                threshold_progress: thresholdProgress,
+                threshold_max: settings.thresholdCP,
+                threshold_percent: thresholdPercent,
+                corruption: state.corruption,
+                sanity: state.sanityErosion,
+                perk_count: state.acquiredPerks.length,
+                perks_list: perksList,
+                active_toggles: activeToggles,
+                pending_perk: state.pendingPerk || '',
+                pending_cp: state.pendingPerkCost || 0,
+                pending_remaining: pendingRemaining
+            }
+        ]
+    };
+    
+    return simData;
+}
+
+function generateSimTrackerBlock(inStoryDate = '') {
+    const data = generateSimTrackerJSON(inStoryDate);
+    if (!data) return '';
+    
+    return '```forge\n' + JSON.stringify(data, null, 2) + '\n```';
+}
+
+function copySimTrackerJSON(inStoryDate = '') {
+    const block = generateSimTrackerBlock(inStoryDate);
+    if (block) {
+        navigator.clipboard.writeText(block).then(() => {
+            toastr.success('SimTracker JSON copied to clipboard!', 'Celestial Forge');
+        }).catch(err => {
+            toastr.error('Failed to copy: ' + err.message);
+            console.log('SimTracker JSON:', block);
+        });
+    }
+    return block;
+}
 
 // ============================================
 // GLOBAL API
@@ -1181,5 +1505,10 @@ window.CelestialForge = {
     generateForgeStatus,
     parseMessageForPerks,
     parseMessageForCPGains,
-    updateUI
+    updateUI,
+    
+    // SimTracker Integration
+    generateSimTrackerJSON,
+    generateSimTrackerBlock,
+    copySimTrackerJSON
 };
