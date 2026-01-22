@@ -6,7 +6,8 @@
     "js": "index.js",
     "css": "style.css",
     "author": "Claude & LO",
-    "version": "3.2.3",
+    "version": "3.2.4",
     "homePage": "https://github.com/Crazy-Rain/celestial-forge-tracker",
+    "description": "Tracks Celestial Forge progression with full bidirectional sync. Parses forge blocks, syncs scaling levels, supports UNCAPPED.",
     "auto_update": true
 }
