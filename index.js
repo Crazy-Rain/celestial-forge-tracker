@@ -503,7 +503,7 @@ function parseMessageForSanity(messageText) {
     return change;
 }
 
-// NEW: Parse loomledger HTML blocks from Opus/Lumia output
+// NEW: Parse forge JSON blocks from AI output - PROPERLY extracts all data
 function parseLoomledger(messageText) {
     const result = {
         perks: [],
@@ -511,51 +511,108 @@ function parseLoomledger(messageText) {
         availableCP: null,
         corruption: null,
         sanity: null,
+        responseCount: null,
+        perkCount: null,
+        perksList: null,
+        activeToggles: null,
+        pendingPerk: null,
+        pendingCost: null,
+        pendingRemaining: null,
+        thresholdProgress: null,
+        thresholdMax: null,
         found: false
     };
     
-    LOOMLEDGER_PATTERN.lastIndex = 0;
-    const ledgerMatch = LOOMLEDGER_PATTERN.exec(messageText);
+    // Primary pattern: ```forge blocks (what SimTracker expects)
+    const forgeBlockPattern = /```forge\s*([\s\S]*?)```/gi;
+    forgeBlockPattern.lastIndex = 0;
+    let match = forgeBlockPattern.exec(messageText);
     
-    if (!ledgerMatch) {
-        // Try alternate formats (forge_state, state_block, etc)
+    if (!match) {
+        // Fallback patterns
         const altPatterns = [
-            /<forge[_\-]?state[^>]*>([\s\S]*?)<\/forge[_\-]?state>/gi,
-            /<state[_\-]?block[^>]*>([\s\S]*?)<\/state[_\-]?block>/gi,
-            /```forge\s*([\s\S]*?)```/gi,
-            /```json[^\n]*forge[^\n]*\s*([\s\S]*?)```/gi
+            /```json\s*([\s\S]*?)```/gi,
+            /<loomledger[^>]*>([\s\S]*?)<\/loomledger>/gi,
+            /<forge[_\-]?state[^>]*>([\s\S]*?)<\/forge[_\-]?state>/gi
         ];
         
         for (const alt of altPatterns) {
             alt.lastIndex = 0;
-            const altMatch = alt.exec(messageText);
-            if (altMatch) {
-                result.found = true;
-                try {
-                    // Try parsing as JSON
-                    const jsonData = JSON.parse(altMatch[1]);
-                    if (jsonData.characters?.[0]) {
-                        const char = jsonData.characters[0];
-                        result.totalCP = char.total_cp;
-                        result.availableCP = char.available_cp;
-                        result.corruption = char.corruption;
-                        result.sanity = char.sanity;
-                    }
-                } catch (e) {
-                    // Not JSON, try regex extraction
-                    parseStateFromText(altMatch[1], result);
-                }
-                break;
-            }
+            match = alt.exec(messageText);
+            if (match) break;
         }
-    } else {
-        result.found = true;
-        parseStateFromText(ledgerMatch[1], result);
     }
     
-    // Also scan full message for inline state mentions
+    if (match) {
+        try {
+            const jsonData = JSON.parse(match[1]);
+            result.found = true;
+            
+            // Extract from SimTracker format: { worldData: {...}, characters: [{...}] }
+            if (jsonData.characters && jsonData.characters[0]) {
+                const char = jsonData.characters[0];
+                
+                // Core stats
+                result.totalCP = char.total_cp ?? null;
+                result.availableCP = char.available_cp ?? null;
+                result.corruption = char.corruption ?? null;
+                result.sanity = char.sanity ?? null;
+                result.perkCount = char.perk_count ?? null;
+                
+                // Threshold tracking
+                result.thresholdProgress = char.threshold_progress ?? null;
+                result.thresholdMax = char.threshold_max ?? null;
+                
+                // Pending perk info
+                result.pendingPerk = char.pending_perk || null;
+                result.pendingCost = char.pending_cp ?? null;
+                result.pendingRemaining = char.pending_remaining ?? null;
+                
+                // Active toggles (comma-separated string)
+                result.activeToggles = char.active_toggles || null;
+                
+                // CRITICAL: Parse perks_list (pipe-separated: "PERK1 (100 CP)|PERK2 (200 CP)")
+                if (char.perks_list && typeof char.perks_list === 'string' && char.perks_list.trim()) {
+                    result.perksList = char.perks_list;
+                    const perkStrings = char.perks_list.split('|').map(s => s.trim()).filter(s => s);
+                    
+                    for (const perkStr of perkStrings) {
+                        // Parse "PERK NAME (XXX CP)" format
+                        const perkMatch = perkStr.match(/^(.+?)\s*\((\d+)\s*CP\)$/i);
+                        if (perkMatch) {
+                            const name = perkMatch[1].trim();
+                            const cost = parseInt(perkMatch[2]) || 0;
+                            if (name && !result.perks.find(p => p.name.toLowerCase() === name.toLowerCase())) {
+                                result.perks.push({ name, cost, description: '', flags: [] });
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Extract response count from worldData
+            if (jsonData.worldData) {
+                result.responseCount = jsonData.worldData.response_count ?? null;
+            }
+            
+            log('Parsed forge block:', result);
+            
+        } catch (e) {
+            log('Failed to parse forge block JSON:', e.message);
+            // Try regex extraction as fallback
+            parseStateFromText(match[1], result);
+            if (result.totalCP !== null || result.corruption !== null) {
+                result.found = true;
+            }
+        }
+    }
+    
+    // Also scan full message for inline state mentions if nothing found
     if (!result.found) {
         parseStateFromText(messageText, result);
+        if (result.totalCP !== null || result.corruption !== null || result.perks.length > 0) {
+            result.found = true;
+        }
     }
     
     return result;
@@ -606,41 +663,89 @@ function processAIMessage(messageText) {
     const state = getCurrentState();
     if (!state || !settings.enabled) return;
     
-    // NEW: First try parsing loomledger format
+    // Parse forge block - this is the primary source of truth from AI
     const ledgerData = parseLoomledger(messageText);
+    
     if (ledgerData.found) {
-        log('Detected loomledger/forge state in AI output');
+        log('Detected forge state block in AI output');
+        let synced = [];
         
-        // Sync corruption if detected and different
+        // Sync corruption - NO restrictive diff limit
         if (ledgerData.corruption !== null && ledgerData.corruption !== state.corruption) {
-            const diff = ledgerData.corruption - state.corruption;
-            if (Math.abs(diff) <= 20) { // Sanity check - don't accept wild swings
-                modifyCorruption(diff);
-                log(`Synced corruption: ${state.corruption} -> ${ledgerData.corruption}`);
-            }
+            state.corruption = Math.max(0, Math.min(100, ledgerData.corruption));
+            synced.push(`corruption→${state.corruption}`);
         }
         
-        // Sync sanity if detected and different
+        // Sync sanity erosion - NO restrictive diff limit  
         if (ledgerData.sanity !== null && ledgerData.sanity !== state.sanityErosion) {
-            const diff = ledgerData.sanity - state.sanityErosion;
-            if (Math.abs(diff) <= 20) {
-                modifySanity(diff);
-                log(`Synced sanity: ${state.sanityErosion} -> ${ledgerData.sanity}`);
+            state.sanityErosion = Math.max(0, Math.min(100, ledgerData.sanity));
+            synced.push(`sanity→${state.sanityErosion}`);
+        }
+        
+        // Sync pending perk
+        if (ledgerData.pendingPerk && ledgerData.pendingPerk !== state.pendingPerk) {
+            state.pendingPerk = ledgerData.pendingPerk;
+            state.pendingPerkCost = ledgerData.pendingCost || 0;
+            synced.push(`pending→${state.pendingPerk}`);
+        } else if (ledgerData.pendingPerk === '' && state.pendingPerk) {
+            // AI cleared the pending perk (probably acquired it)
+            state.pendingPerk = null;
+            state.pendingPerkCost = 0;
+            synced.push('pending→cleared');
+        }
+        
+        // Sync CP values by adjusting bonusCP to match AI's total
+        // This keeps extension and AI in sync without overwriting responseCount
+        if (ledgerData.totalCP !== null) {
+            const currentTotal = getTotalCP(state);
+            if (ledgerData.totalCP !== currentTotal) {
+                // Calculate what bonusCP should be to match AI's total
+                const expectedBase = state.responseCount * settings.cpPerResponse;
+                const neededBonus = ledgerData.totalCP - expectedBase;
+                if (neededBonus >= 0) {
+                    state.bonusCP = neededBonus;
+                    synced.push(`totalCP→${ledgerData.totalCP}`);
+                }
             }
         }
         
-        // Add any detected perks
+        // Sync active toggles
+        if (ledgerData.activeToggles !== null) {
+            const newToggles = ledgerData.activeToggles.split(',').map(t => t.trim()).filter(t => t);
+            if (JSON.stringify(newToggles.sort()) !== JSON.stringify(state.activeToggles.sort())) {
+                state.activeToggles = newToggles;
+                synced.push(`toggles→[${newToggles.length}]`);
+            }
+        }
+        
+        // Add perks from forge block that we don't have
         for (const perkData of ledgerData.perks) {
             const existing = state.acquiredPerks.find(p => 
                 p.name.toLowerCase() === perkData.name.toLowerCase()
             );
             if (!existing) {
-                addPerk(perkData.name, perkData.cost, perkData.description, perkData.flags, 'loomledger');
+                addPerk(perkData.name, perkData.cost, perkData.description, perkData.flags, 'forge-sync');
+                synced.push(`+perk:${perkData.name}`);
             }
         }
+        
+        if (synced.length > 0) {
+            state.lastUpdated = new Date().toISOString();
+            saveSettings();
+            log('Synced from forge block:', synced.join(', '));
+            
+            if (settings.showNotifications && synced.length > 0) {
+                toastr.info(`Synced: ${synced.slice(0, 3).join(', ')}${synced.length > 3 ? '...' : ''}`, 'Forge Sync', { timeOut: 2000 });
+            }
+        }
+        
+        updateUI();
+        return; // Forge block found - don't also run pattern detection to avoid double-counting
     }
     
-    // ALSO run standard pattern detection (catches both formats)
+    // FALLBACK: Only run pattern detection if NO forge block found
+    log('No forge block found, using pattern detection fallback');
+    
     if (settings.autoDetectPerks) {
         const detectedPerks = parseMessageForPerks(messageText);
         for (const perkData of detectedPerks) {
@@ -670,6 +775,8 @@ function processAIMessage(messageText) {
             modifySanity(sanityChange);
         }
     }
+    
+    updateUI();
 }
 
 // ============================================
@@ -977,6 +1084,7 @@ function createSettingsHtml() {
                         <button class="menu_button" id="forge-roll-btn">⚡ Trigger Roll</button>
                         <button class="menu_button" id="forge-checkpoint-btn">📌 Checkpoint</button>
                         <button class="menu_button" id="forge-copy-simtracker">📋 Copy SimTracker</button>
+                        <button class="menu_button" id="forge-force-sync" title="Re-parse last AI message for forge block">🔄 Force Sync</button>
                     </div>
                 </div>
                 
@@ -1104,6 +1212,40 @@ function bindUIEvents() {
     $('#forge-copy-simtracker').off('click').on('click', () => {
         const date = prompt('Enter in-story date (e.g., "April 8th, 2011"):');
         copySimTrackerJSON(date || '');
+    });
+    
+    // Force Sync - re-parse last AI message
+    $('#forge-force-sync').off('click').on('click', () => {
+        const context = SillyTavern.getContext();
+        if (!context.chat || context.chat.length === 0) {
+            toastr.warning('No chat messages to sync from', 'Celestial Forge');
+            return;
+        }
+        
+        // Find the last AI message
+        let lastAIMessage = null;
+        for (let i = context.chat.length - 1; i >= 0; i--) {
+            if (!context.chat[i].is_user && context.chat[i].mes) {
+                lastAIMessage = context.chat[i].mes;
+                break;
+            }
+        }
+        
+        if (!lastAIMessage) {
+            toastr.warning('No AI message found to sync from', 'Celestial Forge');
+            return;
+        }
+        
+        // Check if it has a forge block
+        const hasForgeBlock = /```forge\s*[\s\S]*?```/i.test(lastAIMessage);
+        if (!hasForgeBlock) {
+            toastr.warning('No ```forge block found in last AI message', 'Celestial Forge');
+            return;
+        }
+        
+        // Process it
+        processAIMessage(lastAIMessage);
+        toastr.success('Synced from last AI message!', 'Celestial Forge');
     });
     
     // Add perk
