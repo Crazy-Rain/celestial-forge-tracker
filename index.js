@@ -552,27 +552,31 @@ function parseLoomledger(messageText) {
             if (jsonData.characters && jsonData.characters[0]) {
                 const char = jsonData.characters[0];
                 
+                // v5 FORMAT: Data nested inside stats object
+                // v4 FORMAT: Data flat at character level
+                const data = char.stats || char; // Handle both formats!
+                
                 // Core stats
-                result.totalCP = char.total_cp ?? null;
-                result.availableCP = char.available_cp ?? null;
-                result.corruption = char.corruption ?? null;
-                result.sanity = char.sanity ?? null;
-                result.perkCount = char.perk_count ?? null;
+                result.totalCP = data.total_cp ?? null;
+                result.availableCP = data.available_cp ?? null;
+                result.corruption = data.corruption ?? null;
+                result.sanity = data.sanity ?? data.sanityErosion ?? null;
+                result.perkCount = data.perk_count ?? null;
                 
                 // Threshold tracking
-                result.thresholdProgress = char.threshold_progress ?? null;
-                result.thresholdMax = char.threshold_max ?? null;
+                result.thresholdProgress = data.threshold_progress ?? null;
+                result.thresholdMax = data.threshold_max ?? null;
                 
                 // Pending perk info
-                result.pendingPerk = char.pending_perk || null;
-                result.pendingCost = char.pending_cp ?? null;
-                result.pendingRemaining = char.pending_remaining ?? null;
+                result.pendingPerk = data.pending_perk || null;
+                result.pendingCost = data.pending_cp ?? null;
+                result.pendingRemaining = data.pending_remaining ?? null;
                 
                 // ============================================
-                // NEW v4 FORMAT: perks as array of objects
+                // v5/v4 FORMAT: perks as array of objects
                 // ============================================
-                if (char.perks && Array.isArray(char.perks)) {
-                    for (const perk of char.perks) {
+                if (data.perks && Array.isArray(data.perks)) {
+                    for (const perk of data.perks) {
                         if (perk.name) {
                             result.perks.push({
                                 name: perk.name,
@@ -590,9 +594,9 @@ function parseLoomledger(messageText) {
                 // ============================================
                 // LEGACY: perks_list as pipe-separated string
                 // ============================================
-                else if (char.perks_list && typeof char.perks_list === 'string' && char.perks_list.trim()) {
-                    result.perksList = char.perks_list;
-                    const perkStrings = char.perks_list.split('|').map(s => s.trim()).filter(s => s);
+                else if (data.perks_list && typeof data.perks_list === 'string' && data.perks_list.trim()) {
+                    result.perksList = data.perks_list;
+                    const perkStrings = data.perks_list.split('|').map(s => s.trim()).filter(s => s);
                     
                     for (const perkStr of perkStrings) {
                         // Parse "PERK NAME (XXX CP)" format
@@ -625,13 +629,16 @@ function parseLoomledger(messageText) {
                     }
                 }
                 // Fallback to active_toggles string from JSON
-                else if (char.active_toggles) {
-                    result.activeToggles = char.active_toggles;
+                else if (data.active_toggles) {
+                    result.activeToggles = data.active_toggles;
                 }
+                
+                // Response count - check both locations
+                result.responseCount = data.response_count ?? null;
             }
             
-            // Extract response count from worldData
-            if (jsonData.worldData) {
+            // Extract response count from worldData as fallback
+            if (jsonData.worldData && result.responseCount === null) {
                 result.responseCount = jsonData.worldData.response_count ?? null;
             }
             
@@ -1654,7 +1661,7 @@ function generateSimTrackerJSON(inStoryDate = '') {
     const thresholdProgress = totalCP % settings.thresholdCP;
     const thresholdPercent = Math.round((thresholdProgress / settings.thresholdCP) * 100);
     
-    // Build perks array with full data (v4 format)
+    // Build perks array with full data (v5 format)
     const perksArray = state.acquiredPerks.map(p => ({
         name: p.name,
         cost: p.cost,
@@ -1667,6 +1674,7 @@ function generateSimTrackerJSON(inStoryDate = '') {
     // Pending perk info
     const pendingRemaining = state.pendingPerk ? Math.max(0, state.pendingPerkCost - availableCP) : 0;
     
+    // v5 FORMAT: SimTracker-compatible nested structure
     const simData = {
         worldData: {
             current_date: inStoryDate || 'Unknown',
@@ -1675,18 +1683,22 @@ function generateSimTrackerJSON(inStoryDate = '') {
         characters: [
             {
                 name: 'Smith',
-                total_cp: totalCP,
-                available_cp: availableCP,
-                threshold_progress: thresholdProgress,
-                threshold_max: settings.thresholdCP,
-                threshold_percent: thresholdPercent,
-                corruption: state.corruption,
-                sanity: state.sanityErosion,
-                perk_count: state.acquiredPerks.length,
-                perks: perksArray,
-                pending_perk: state.pendingPerk || '',
-                pending_cp: state.pendingPerkCost || 0,
-                pending_remaining: pendingRemaining
+                currentDateTime: inStoryDate || 'Unknown',
+                stats: {
+                    total_cp: totalCP,
+                    available_cp: availableCP,
+                    threshold_progress: thresholdProgress,
+                    threshold_max: settings.thresholdCP,
+                    threshold_percent: thresholdPercent,
+                    corruption: state.corruption,
+                    sanity: state.sanityErosion,
+                    perk_count: state.acquiredPerks.length,
+                    perks: perksArray,
+                    pending_perk: state.pendingPerk || '',
+                    pending_cp: state.pendingPerkCost || 0,
+                    pending_remaining: pendingRemaining,
+                    response_count: state.responseCount
+                }
             }
         ]
     };
