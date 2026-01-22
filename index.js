@@ -1,17 +1,27 @@
-// Celestial Forge Tracker v9 - Full Bidirectional Sync with SimTracker
-// Now properly parses forge blocks AND syncs scaling levels both ways!
+// Celestial Forge Tracker v9.1 - SillyTavern Extension
+// Compatible with ST's extension system
+
+import { eventSource, event_types, saveSettingsDebounced } from "../../../../script.js";
+import { extension_settings, getContext } from "../../../extensions.js";
+
+const extensionName = "celestial-forge-tracker";
+const extensionFolderPath = `scripts/extensions/third_party/${extensionName}`;
+
+const defaultSettings = {
+    enabled: true,
+    cp_per_response: 10,
+    threshold_base: 100,
+    auto_parse_forge_blocks: true,
+    sync_to_simtracker: true,
+    debug_mode: false
+};
+
+// ==================== CELESTIAL FORGE TRACKER CLASS ====================
 
 class CelestialForgeTracker {
     constructor() {
-        this.extensionName = "celestial-forge-tracker";
-        this.extensionVersion = "9.0.0";
+        this.extensionVersion = "9.1.0";
         this.state = this.getDefaultState();
-        this.settings = this.getDefaultSettings();
-        this.responseCount = 0;
-        this.lastUpdateTime = Date.now();
-        this.hasUncapped = false; // Tracks if UNCAPPED perk acquired
-        
-        // Valid perk flags
         this.validFlags = [
             'PASSIVE', 'TOGGLEABLE', 'ALWAYS-ON', 
             'PERMISSION-GATED', 'SELECTIVE',
@@ -38,20 +48,13 @@ class CelestialForgeTracker {
             pending_perk: null,
             active_toggles: [],
             perk_history: [],
-            has_uncapped: false
+            has_uncapped: false,
+            last_forge_block: null
         };
     }
 
-    getDefaultSettings() {
-        return {
-            cp_per_response: 10,
-            threshold_base: 100,
-            auto_detect_perks: true,
-            auto_detect_corruption: true,
-            auto_detect_sanity: true,
-            parse_forge_blocks: true,  // NEW: Parse forge blocks for sync
-            sync_scaling_from_ai: true // NEW: Update scaling from AI output
-        };
+    getSettings() {
+        return extension_settings[extensionName] || defaultSettings;
     }
 
     // ==================== STATE MANAGEMENT ====================
@@ -65,7 +68,7 @@ class CelestialForgeTracker {
 
     incrementResponse() {
         this.state.response_count++;
-        this.state.base_cp = this.state.response_count * this.settings.cp_per_response;
+        this.state.base_cp = this.state.response_count * (this.getSettings().cp_per_response || 10);
         this.calculateTotals();
         this.saveState();
         return this.state;
@@ -74,7 +77,6 @@ class CelestialForgeTracker {
     // ==================== PERK MANAGEMENT ====================
 
     addPerk(perkData) {
-        // Check for UNCAPPED perk specifically
         if (perkData.name?.toUpperCase().includes('UNCAPPED') || 
             perkData.flags?.includes('UNCAPPED')) {
             this.state.has_uncapped = true;
@@ -91,11 +93,11 @@ class CelestialForgeTracker {
             active: perkData.active !== false,
             acquired_at: Date.now(),
             acquired_response: this.state.response_count,
-            // SCALING support
             scaling: this.createScalingObject(perkData)
         };
 
-        // Check affordability
+        this.calculateTotals();
+        
         if (perk.cost <= this.state.available_cp) {
             this.state.acquired_perks.push(perk);
             this.state.perk_history.push({
@@ -111,14 +113,13 @@ class CelestialForgeTracker {
             
             this.calculateTotals();
             this.saveState();
-            return { success: true, perk, newState: this.state };
+            this.syncToSimTracker();
+            return { success: true, perk };
         } else {
             this.state.pending_perk = {
                 name: perk.name,
                 cost: perk.cost,
                 flags: perk.flags,
-                description: perk.description,
-                constellation: perk.constellation,
                 cp_needed: perk.cost - this.state.available_cp
             };
             this.saveState();
@@ -130,7 +131,6 @@ class CelestialForgeTracker {
         const hasScaling = perkData.flags?.includes('SCALING');
         if (!hasScaling && !perkData.scaling) return null;
         
-        // If perkData already has scaling object from forge block, use it
         if (perkData.scaling && typeof perkData.scaling === 'object') {
             return {
                 level: perkData.scaling.level || 1,
@@ -141,20 +141,16 @@ class CelestialForgeTracker {
             };
         }
         
-        // Create new scaling object
         return {
             level: 1,
-            maxLevel: this.state.has_uncapped ? 999 : (perkData.maxLevel || 5),
+            maxLevel: this.state.has_uncapped ? 999 : 5,
             xp: 0,
             xp_percent: 0,
             uncapped: this.state.has_uncapped
         };
     }
 
-    // ==================== SCALING SYSTEM ====================
-    
     applyUncappedToAllPerks() {
-        // When UNCAPPED is acquired, update all scaling perks
         this.state.has_uncapped = true;
         for (const perk of this.state.acquired_perks) {
             if (perk.scaling) {
@@ -163,7 +159,7 @@ class CelestialForgeTracker {
             }
         }
         this.saveState();
-        console.log('[Celestial Forge] UNCAPPED acquired! All scaling perks now have unlimited levels!');
+        console.log('[Celestial Forge] UNCAPPED acquired!');
     }
     
     updateScaling(perkName, newLevel, newXp = null) {
@@ -172,27 +168,14 @@ class CelestialForgeTracker {
         );
         if (!perk || !perk.scaling) return null;
         
-        const oldLevel = perk.scaling.level;
         perk.scaling.level = newLevel;
-        
         if (newXp !== null) {
             perk.scaling.xp = newXp;
-            // Calculate xp_percent (assume 100 xp per level)
-            const xpPerLevel = 100;
-            perk.scaling.xp_percent = Math.round((newXp / xpPerLevel) * 100);
-        }
-        
-        if (newLevel > oldLevel) {
-            this.state.perk_history.push({
-                action: 'scaling_levelup',
-                perk: perkName,
-                oldLevel: oldLevel,
-                newLevel: newLevel,
-                timestamp: Date.now()
-            });
+            perk.scaling.xp_percent = Math.round((newXp / (newLevel * 10)) * 100);
         }
         
         this.saveState();
+        this.syncToSimTracker();
         return perk.scaling;
     }
     
@@ -204,33 +187,22 @@ class CelestialForgeTracker {
         
         perk.scaling.xp += xpAmount;
         
-        // Level up check (100 XP per level)
-        const xpPerLevel = 100;
+        const xpPerLevel = perk.scaling.level * 10;
         while (perk.scaling.xp >= xpPerLevel) {
-            // Check if can level up
             if (perk.scaling.level >= perk.scaling.maxLevel && !perk.scaling.uncapped) {
-                perk.scaling.xp = xpPerLevel; // Cap at max
+                perk.scaling.xp = xpPerLevel;
                 break;
             }
-            
             perk.scaling.level++;
             perk.scaling.xp -= xpPerLevel;
-            
-            this.state.perk_history.push({
-                action: 'scaling_levelup',
-                perk: perkName,
-                newLevel: perk.scaling.level,
-                timestamp: Date.now()
-            });
         }
         
-        perk.scaling.xp_percent = Math.round((perk.scaling.xp / xpPerLevel) * 100);
+        perk.scaling.xp_percent = Math.min(100, Math.round((perk.scaling.xp / (perk.scaling.level * 10)) * 100));
         
         this.saveState();
+        this.syncToSimTracker();
         return perk.scaling;
     }
-
-    // ==================== TOGGLE SYSTEM ====================
 
     togglePerk(perkName) {
         const perk = this.state.acquired_perks.find(p => 
@@ -242,115 +214,118 @@ class CelestialForgeTracker {
         perk.active = !perk.active;
         
         if (perk.active) {
-            if (!this.state.active_toggles.includes(perkName)) {
-                this.state.active_toggles.push(perkName);
+            if (!this.state.active_toggles.includes(perk.name)) {
+                this.state.active_toggles.push(perk.name);
             }
         } else {
             this.state.active_toggles = this.state.active_toggles.filter(n => 
-                n.toLowerCase() !== perkName.toLowerCase()
+                n.toLowerCase() !== perk.name.toLowerCase()
             );
         }
         
         this.saveState();
+        this.syncToSimTracker();
         return { success: true, active: perk.active };
     }
 
-    // ==================== FORGE BLOCK PARSING (THE KEY!) ====================
+    // ==================== FORGE BLOCK PARSING ====================
     
     parseForgeBlock(text) {
-        // Extract ```forge block from AI response
-        const forgeMatch = text.match(/```forge\s*([\s\S]*?)```/i);
+        const forgeMatch = text.match(/```forge\s*([\s\S]*?)```/);
         if (!forgeMatch) return null;
         
         try {
-            const jsonStr = forgeMatch[1].trim();
-            const forgeData = JSON.parse(jsonStr);
-            return forgeData;
+            const data = JSON.parse(forgeMatch[1].trim());
+            if (!data.characters?.[0]) return null;
+            
+            const char = data.characters[0];
+            const stats = char.stats || char;
+            
+            return {
+                raw: data,
+                characterName: char.characterName || char.name || "Smith",
+                total_cp: stats.total_cp || 0,
+                available_cp: stats.available_cp || 0,
+                corruption: stats.corruption || 0,
+                sanity: stats.sanity || 0,
+                perks: this.normalizePerks(stats.perks || stats.perks_list),
+                pending_perk: stats.pending_perk || ""
+            };
         } catch (e) {
-            console.warn('[Celestial Forge] Failed to parse forge block:', e);
+            console.error('[Celestial Forge] Parse error:', e);
             return null;
         }
     }
     
-    syncFromForgeBlock(forgeData) {
-        // Sync state from parsed forge block (AI -> Extension)
-        if (!forgeData?.characters?.[0]) return false;
-        
-        const char = forgeData.characters[0];
-        const stats = char.stats;
-        
-        if (!stats) {
-            console.warn('[Celestial Forge] No stats in forge block');
-            return false;
+    normalizePerks(perksInput) {
+        if (!perksInput) return [];
+        if (Array.isArray(perksInput)) return perksInput.map(p => this.normalizePerk(p));
+        if (typeof perksInput === 'string') {
+            return perksInput.split('|').map(part => {
+                const match = part.match(/(.+?)\s*\((\d+)\s*CP\)/);
+                return match ? { name: match[1].trim(), cost: parseInt(match[2]), flags: [], scaling: null } : null;
+            }).filter(Boolean);
         }
+        return [];
+    }
+    
+    normalizePerk(perk) {
+        const hasScaling = perk.flags?.includes('SCALING') || perk.scaling;
+        return {
+            name: perk.name || "Unknown",
+            cost: parseInt(perk.cost) || 0,
+            flags: perk.flags || [],
+            description: perk.description || "",
+            toggleable: perk.toggleable || perk.flags?.includes('TOGGLEABLE'),
+            active: perk.active !== false,
+            scaling: hasScaling ? {
+                level: perk.scaling?.level || 1,
+                maxLevel: this.state.has_uncapped ? 999 : (perk.scaling?.maxLevel || 5),
+                xp: perk.scaling?.xp || 0,
+                xp_percent: perk.scaling?.xp_percent || 0,
+                uncapped: this.state.has_uncapped || perk.scaling?.uncapped
+            } : null
+        };
+    }
+
+    syncFromForgeBlock(parsed) {
+        if (!parsed) return false;
         
-        // Sync basic stats
-        if (stats.corruption !== undefined) this.state.corruption = stats.corruption;
-        if (stats.sanity !== undefined) this.state.sanity = stats.sanity;
+        const hasUncapped = parsed.perks.some(p => 
+            p.name?.toUpperCase().includes('UNCAPPED') || p.flags?.includes('UNCAPPED')
+        );
+        if (hasUncapped && !this.state.has_uncapped) this.applyUncappedToAllPerks();
         
-        // Sync scaling levels from perks array
-        if (Array.isArray(stats.perks)) {
-            for (const forgePerk of stats.perks) {
-                // Find matching perk in our state
-                const localPerk = this.state.acquired_perks.find(p => 
-                    p.name.toLowerCase() === forgePerk.name?.toLowerCase()
-                );
-                
-                if (localPerk) {
-                    // Sync active state
-                    if (forgePerk.active !== undefined) {
-                        localPerk.active = forgePerk.active;
-                    }
-                    
-                    // Sync scaling data (THIS IS THE KEY!)
-                    if (forgePerk.scaling && localPerk.scaling) {
-                        if (forgePerk.scaling.level !== undefined) {
-                            localPerk.scaling.level = forgePerk.scaling.level;
-                        }
-                        if (forgePerk.scaling.xp !== undefined) {
-                            localPerk.scaling.xp = forgePerk.scaling.xp;
-                        }
-                        if (forgePerk.scaling.xp_percent !== undefined) {
-                            localPerk.scaling.xp_percent = forgePerk.scaling.xp_percent;
-                        }
-                        if (forgePerk.scaling.uncapped) {
-                            localPerk.scaling.uncapped = true;
-                            localPerk.scaling.maxLevel = 999;
-                            this.state.has_uncapped = true;
-                        }
-                    }
-                } else if (forgePerk.name) {
-                    // Perk in forge block but not in our state - add it!
-                    console.log('[Celestial Forge] Found new perk in forge block:', forgePerk.name);
-                    this.addPerk(forgePerk);
+        this.state.corruption = parsed.corruption;
+        this.state.sanity = parsed.sanity;
+        
+        for (const newPerk of parsed.perks) {
+            const existing = this.state.acquired_perks.find(p => 
+                p.name.toUpperCase() === newPerk.name?.toUpperCase()
+            );
+            
+            if (existing) {
+                if (newPerk.active !== undefined) existing.active = newPerk.active;
+                if (newPerk.scaling && existing.scaling) {
+                    Object.assign(existing.scaling, newPerk.scaling);
                 }
+            } else if (newPerk.name) {
+                this.addPerk(newPerk);
             }
         }
         
-        // Update active toggles
-        this.state.active_toggles = this.state.acquired_perks
-            .filter(p => p.toggleable && p.active)
-            .map(p => p.name);
-        
         this.saveState();
+        this.syncToSimTracker();
         return true;
     }
 
-    // ==================== SIMTRACKER JSON GENERATION ====================
+    // ==================== SIMTRACKER ====================
     
-    generateSimTrackerJSON(dateTimeOverride = null) {
-        const now = new Date();
-        const dateStr = dateTimeOverride || now.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-        });
-        const timeStr = now.toLocaleTimeString('en-US', { 
-            hour: '2-digit', minute: '2-digit' 
-        });
-        
+    generateSimTrackerJSON() {
         return {
             characters: [{
-                characterName: "Smith",  // CORRECT KEY!
-                currentDateTime: dateTimeOverride || `${dateStr}, ${timeStr}`,
+                characterName: "Smith",
+                currentDateTime: new Date().toLocaleString(),
                 bgColor: "#e94560",
                 stats: {
                     total_cp: this.state.total_cp,
@@ -362,40 +337,26 @@ class CelestialForgeTracker {
                     corruption: this.state.corruption,
                     sanity: this.state.sanity,
                     perk_count: this.state.acquired_perks.length,
-                    perks: this.state.acquired_perks.map(p => {
-                        const hasScaling = p.scaling !== null;
-                        const isUncapped = p.scaling?.uncapped || false;
-                        const xpNeeded = hasScaling ? (p.scaling.level * 10) : 0;
-                        
-                        return {
-                            name: p.name,
-                            cost: p.cost,
-                            flags: p.flags,
-                            flags_str: p.flags?.join(', ') || '', // Pre-joined for display
-                            description: p.description,
-                            toggleable: p.toggleable || false,
-                            active: p.active !== false,
-                            // Scaling with display helpers
-                            scaling: hasScaling ? {
-                                level: p.scaling.level,
-                                maxLevel: p.scaling.maxLevel,
-                                xp: p.scaling.xp,
-                                xp_needed: xpNeeded,
-                                xp_percent: Math.min(100, Math.round((p.scaling.xp / xpNeeded) * 100)) || 0,
-                                uncapped: isUncapped,
-                                // Pre-formatted display string
-                                level_display: isUncapped 
-                                    ? `Lv.${p.scaling.level}/∞` 
-                                    : `Lv.${p.scaling.level}/${p.scaling.maxLevel}`,
-                                xp_display: `${p.scaling.xp}/${xpNeeded} XP`
-                            } : null,
-                            // Top-level flags for easy template checks
-                            has_scaling: hasScaling,
-                            is_uncapped: isUncapped,
-                            is_toggleable: p.toggleable || false,
-                            is_active: p.active !== false
-                        };
-                    }),
+                    perks: this.state.acquired_perks.map(p => ({
+                        name: p.name,
+                        cost: p.cost,
+                        flags: p.flags,
+                        flags_str: p.flags?.join(', ') || '',
+                        description: p.description,
+                        toggleable: p.toggleable,
+                        active: p.active,
+                        has_scaling: !!p.scaling,
+                        is_uncapped: p.scaling?.uncapped || false,
+                        scaling: p.scaling ? {
+                            level: p.scaling.level,
+                            maxLevel: p.scaling.maxLevel,
+                            xp: p.scaling.xp,
+                            xp_percent: p.scaling.xp_percent,
+                            uncapped: p.scaling.uncapped,
+                            level_display: p.scaling.uncapped ? `Lv.${p.scaling.level}/∞` : `Lv.${p.scaling.level}/${p.scaling.maxLevel}`,
+                            xp_display: `${p.scaling.xp}/${p.scaling.level * 10} XP`
+                        } : null
+                    })),
                     pending_perk: this.state.pending_perk?.name || "",
                     pending_cp: this.state.pending_perk?.cost || 0,
                     pending_remaining: this.state.pending_perk?.cp_needed || 0
@@ -404,419 +365,173 @@ class CelestialForgeTracker {
         };
     }
 
-    // ==================== CONTEXT INJECTION (FOR AI) ====================
+    syncToSimTracker() {
+        try {
+            const data = this.generateSimTrackerJSON();
+            if (window.SimTracker) window.SimTracker.updateData(data);
+            window.celestialForgeState = data;
+            window.dispatchEvent(new CustomEvent('celestial-forge-update', { detail: data }));
+        } catch (e) {
+            console.warn('[Celestial Forge] Sync failed:', e);
+        }
+    }
+
+    // ==================== CONTEXT INJECTION ====================
     
-    /**
-     * Generate TEXT block for AI context (human readable)
-     */
     generateContextBlock() {
         const perksStr = this.state.acquired_perks.map(p => {
             let str = `- ${p.name} (${p.cost} CP) [${p.flags.join(', ')}]`;
-            if (p.scaling) {
-                const maxStr = p.scaling.uncapped ? '∞' : p.scaling.maxLevel;
-                str += ` [Level ${p.scaling.level}/${maxStr}, XP: ${p.scaling.xp}/100]`;
-            }
-            if (p.toggleable) str += p.active ? ' [ACTIVE]' : ' [INACTIVE]';
+            if (p.scaling) str += ` [Lv.${p.scaling.level}/${p.scaling.uncapped ? '∞' : p.scaling.maxLevel}]`;
+            if (p.toggleable) str += p.active ? ' [ON]' : ' [OFF]';
             return str;
         }).join('\n');
         
-        const togglesStr = this.state.active_toggles.length > 0 
-            ? this.state.active_toggles.join(', ') 
-            : '(none)';
-        
-        return `[CELESTIAL FORGE STATE - USE THIS FOR FORGE BLOCK OUTPUT]
-Response Count: ${this.state.response_count}
-Total CP: ${this.state.total_cp} | Available: ${this.state.available_cp} | Spent: ${this.state.spent_cp}
-Threshold Progress: ${this.state.threshold_progress}/${this.state.threshold}
-Corruption: ${this.state.corruption}/100 | Sanity Erosion: ${this.state.sanity}/100
-${this.state.has_uncapped ? '⚠️ UNCAPPED ACTIVE - All scaling perks have unlimited levels!' : ''}
-${this.state.pending_perk ? `PENDING: ${this.state.pending_perk.name} (need ${this.state.pending_perk.cp_needed} more CP)` : ''}
-Active Toggles: ${togglesStr}
-
-ACQUIRED PERKS (${this.state.acquired_perks.length}):
-${perksStr || '(none yet)'}
-[END FORGE STATE]`;
+        return `[FORGE STATE]
+CP: ${this.state.total_cp} total, ${this.state.available_cp} available
+Corruption: ${this.state.corruption}/100 | Sanity: ${this.state.sanity}/100
+${this.state.has_uncapped ? 'UNCAPPED ACTIVE' : ''}
+PERKS (${this.state.acquired_perks.length}):
+${perksStr || '(none)'}`;
     }
     
-    /**
-     * Generate JSON injection - SAME FORMAT as AI output!
-     * This is the PREFERRED method for consistent bidirectional sync
-     */
     generateForgeBlockInjection() {
-        const json = this.generateSimTrackerJSON();
-        
-        return `[CELESTIAL FORGE - CURRENT STATE]
-Read this JSON state. Update values based on story events. Output updated state at response end.
-
-\`\`\`forge
-${JSON.stringify(json, null, 2)}
-\`\`\`
-
-INSTRUCTIONS:
-- Increment response_count by 1
-- Add 10 to total_cp (10 CP per response)
-- Recalculate available_cp = total_cp - spent_cp
-- Update threshold_progress = total_cp % 100
-- If acquiring a perk: add to perks array, add cost to spent_cp
-- If perk has SCALING flag: include scaling object with level/xp
-- Update corruption/sanity if story events warrant
-- Output the COMPLETE updated \`\`\`forge block at response end
-
-[END FORGE INJECTION]`;
-    }
-    
-    /**
-     * Generate minimal injection (just the JSON, less tokens)
-     */
-    generateMinimalInjection() {
-        const json = this.generateSimTrackerJSON();
-        return `[FORGE STATE]\n\`\`\`forge\n${JSON.stringify(json)}\n\`\`\`\n[Update and output at response end]`;
-    }
-    }
-    
-    // Generate the EXACT JSON template for AI to copy
-    generateForgeBlockTemplate() {
-        const json = this.generateSimTrackerJSON();
-        return '```forge\n' + JSON.stringify(json, null, 2) + '\n```';
+        return `\`\`\`forge\n${JSON.stringify(this.generateSimTrackerJSON(), null, 2)}\n\`\`\``;
     }
 
-    // ==================== AI RESPONSE PROCESSING (FULL) ====================
-
-    parseAIResponse(text) {
-        const results = { 
-            perks: [], 
-            corruption: null, 
-            sanity: null, 
-            scaling: [],
-            forgeBlock: null 
-        };
-        
-        // FIRST: Try to parse forge block (HIGHEST PRIORITY!)
-        results.forgeBlock = this.parseForgeBlock(text);
-        
-        // Parse perk acquisitions from narrative
-        const perkPatterns = [
-            /\[PERK (?:GAINED|ACQUIRED|UNLOCKED)\]\s*\n?\s*Name:\s*(.+?)\s*\n\s*Cost:\s*(\d+)\s*CP\s*\n\s*Flags?:\s*\[([^\]]*)\]\s*\n\s*(?:Description:\s*)?(.+?)(?=\n\n|\[|$)/gis,
-            /\*\*PERK:\s*(.+?)\*\*\s*\((\d+)\s*CP\)\s*\[([^\]]*)\]\s*[-:]?\s*(.+?)(?=\n\n|\*\*|$)/gi,
-            /\*\*([A-Z][A-Z\s]+?)\*\*\s*\((\d+)\s*CP\).*?\[([^\]]*)\].*?[-–—:]\s*(.+?)(?=\n\n|$)/gi,
-            /The Forge (?:grants|bestows|resonates).*?["'](.+?)["'].*?(\d+)\s*CP/gi
-        ];
-        
-        for (const pattern of perkPatterns) {
-            let match;
-            while ((match = pattern.exec(text)) !== null) {
-                const flags = match[3] ? match[3].split(/[,\s]+/).filter(f => f.trim()) : [];
-                results.perks.push({
-                    name: match[1].trim(),
-                    cost: parseInt(match[2]),
-                    flags: flags,
-                    description: match[4]?.trim() || ''
-                });
-            }
-        }
-        
-        // Parse corruption changes
-        const corruptionPatterns = [
-            /\[?CORRUPTION[:\s]+([+-]?\d+)\]?/gi,
-            /corruption (?:increases?|rises?|grows?) by (\d+)/gi,
-            /\+(\d+) corruption/gi
-        ];
-        for (const pattern of corruptionPatterns) {
-            const match = pattern.exec(text);
-            if (match) {
-                results.corruption = parseInt(match[1]);
-                break;
-            }
-        }
-        
-        // Parse sanity changes
-        const sanityPatterns = [
-            /\[?SANITY[:\s]+([+-]?\d+)\]?/gi,
-            /sanity (?:erodes?|decreases?|falls?) by (\d+)/gi,
-            /\+(\d+) sanity erosion/gi
-        ];
-        for (const pattern of sanityPatterns) {
-            const match = pattern.exec(text);
-            if (match) {
-                results.sanity = parseInt(match[1]);
-                break;
-            }
-        }
-        
-        // Parse scaling level ups
-        const scalingPatterns = [
-            /\[([^\]]+?) LEVELS? UP[^\]]*\]/gi,
-            /([A-Z][A-Z\s]+?) (?:grows stronger|levels up|advances|evolves)/gi,
-            /Level (?:increased?|up) for ([^.!]+)/gi
-        ];
-        for (const pattern of scalingPatterns) {
-            let match;
-            while ((match = pattern.exec(text)) !== null) {
-                results.scaling.push(match[1].trim());
-            }
-        }
-        
-        return results;
-    }
+    // ==================== AI RESPONSE PROCESSING ====================
 
     processAIResponse(text) {
-        const parsed = this.parseAIResponse(text);
+        if (!this.getSettings().enabled) return null;
+        
         const actions = [];
         
-        // PRIORITY 1: Sync from forge block if present
-        if (parsed.forgeBlock && this.settings.sync_scaling_from_ai) {
-            const synced = this.syncFromForgeBlock(parsed.forgeBlock);
-            if (synced) {
-                actions.push({ type: 'forge_sync', success: true });
-            }
+        // Parse forge block
+        const forgeBlock = this.parseForgeBlock(text);
+        if (forgeBlock && this.getSettings().auto_parse_forge_blocks) {
+            this.syncFromForgeBlock(forgeBlock);
+            actions.push({ type: 'forge_sync' });
         }
         
-        // PRIORITY 2: Process new perks from narrative
-        for (const perkData of parsed.perks) {
-            // Check if already have this perk
+        // Parse narrative perks
+        const perkMatches = text.matchAll(/\*\*([A-Z][A-Z\s]+?)\*\*\s*\((\d+)\s*CP\).*?\[([^\]]*)\]/gi);
+        for (const match of perkMatches) {
             const exists = this.state.acquired_perks.some(p => 
-                p.name.toLowerCase() === perkData.name.toLowerCase()
+                p.name.toLowerCase() === match[1].trim().toLowerCase()
             );
             if (!exists) {
-                const result = this.addPerk(perkData);
-                actions.push({ type: 'perk', data: perkData, result });
+                this.addPerk({
+                    name: match[1].trim(),
+                    cost: parseInt(match[2]),
+                    flags: match[3].split(/[,\s]+/).filter(f => f.trim())
+                });
+                actions.push({ type: 'perk_added', name: match[1].trim() });
             }
         }
         
-        // PRIORITY 3: Process corruption changes
-        if (parsed.corruption !== null) {
-            this.state.corruption = Math.min(100, Math.max(0, this.state.corruption + parsed.corruption));
-            actions.push({ type: 'corruption', change: parsed.corruption, new_value: this.state.corruption });
+        // Parse corruption/sanity
+        const corruptionMatch = text.match(/corruption[:\s]+([+-]?\d+)/i);
+        if (corruptionMatch) {
+            this.state.corruption = Math.min(100, Math.max(0, this.state.corruption + parseInt(corruptionMatch[1])));
         }
         
-        // PRIORITY 4: Process sanity changes
-        if (parsed.sanity !== null) {
-            this.state.sanity = Math.min(100, Math.max(0, this.state.sanity + parsed.sanity));
-            actions.push({ type: 'sanity', change: parsed.sanity, new_value: this.state.sanity });
+        const sanityMatch = text.match(/sanity[:\s]+([+-]?\d+)/i);
+        if (sanityMatch) {
+            this.state.sanity = Math.min(100, Math.max(0, this.state.sanity + parseInt(sanityMatch[1])));
         }
         
-        // PRIORITY 5: Process scaling mentions (gives bonus XP)
-        for (const perkName of parsed.scaling) {
-            const progress = this.addScalingXP(perkName, 25); // 25 XP for narrative mention
-            if (progress) {
-                actions.push({ type: 'scaling_xp', perk: perkName, progress });
-            }
-        }
-        
-        // Increment response count
         this.incrementResponse();
         
-        this.saveState();
-        return { actions, newState: this.state };
+        if (this.getSettings().debug_mode) {
+            console.log('[Celestial Forge] Processed:', actions);
+        }
+        
+        return actions;
     }
 
     // ==================== PERSISTENCE ====================
 
     saveState() {
         try {
-            if (typeof localStorage !== 'undefined') {
-                localStorage.setItem('celestialForgeState_v9', JSON.stringify(this.state));
-                localStorage.setItem('celestialForgeSettings_v9', JSON.stringify(this.settings));
-            }
+            const context = getContext();
+            const key = context?.chatId ? `celestialForge_${context.chatId}` : 'celestialForge_global';
+            localStorage.setItem(key, JSON.stringify(this.state));
         } catch (e) {
-            console.warn('[Celestial Forge] Failed to save state:', e);
+            console.warn('[Celestial Forge] Save failed:', e);
         }
     }
 
     loadState() {
         try {
-            if (typeof localStorage !== 'undefined') {
-                const savedState = localStorage.getItem('celestialForgeState_v9');
-                const savedSettings = localStorage.getItem('celestialForgeSettings_v9');
-                
-                if (savedState) {
-                    this.state = { ...this.getDefaultState(), ...JSON.parse(savedState) };
-                }
-                if (savedSettings) {
-                    this.settings = { ...this.getDefaultSettings(), ...JSON.parse(savedSettings) };
-                }
+            const context = getContext();
+            let saved = context?.chatId ? localStorage.getItem(`celestialForge_${context.chatId}`) : null;
+            if (!saved) saved = localStorage.getItem('celestialForge_global');
+            if (saved) {
+                this.state = { ...this.getDefaultState(), ...JSON.parse(saved) };
+                this.syncToSimTracker();
             }
         } catch (e) {
-            console.warn('[Celestial Forge] Failed to load state:', e);
+            console.warn('[Celestial Forge] Load failed:', e);
         }
         return this.state;
-    }
-
-    // ==================== MANUAL CONTROLS ====================
-
-    manualSetCP(total, bonus = null) {
-        if (bonus !== null) {
-            this.state.bonus_cp = bonus;
-        } else {
-            this.state.bonus_cp = total - this.state.base_cp;
-        }
-        this.calculateTotals();
-        this.saveState();
-        return this.state;
-    }
-
-    manualSetCorruption(value) {
-        this.state.corruption = Math.min(100, Math.max(0, value));
-        this.saveState();
-        return this.state;
-    }
-
-    manualSetSanity(value) {
-        this.state.sanity = Math.min(100, Math.max(0, value));
-        this.saveState();
-        return this.state;
-    }
-    
-    manualSetScaling(perkName, level, xp = 0) {
-        return this.updateScaling(perkName, level, xp);
     }
 
     resetState() {
         this.state = this.getDefaultState();
         this.saveState();
+        this.syncToSimTracker();
         return this.state;
     }
 
-    // ==================== EXPORT / IMPORT ====================
-    
-    exportState() {
-        return {
-            version: this.extensionVersion,
-            timestamp: Date.now(),
-            state: this.state,
-            settings: this.settings
-        };
-    }
-    
-    importState(data) {
-        if (data.state) {
-            this.state = { ...this.getDefaultState(), ...data.state };
-            this.calculateTotals();
-            this.saveState();
-            return true;
-        }
-        return false;
-    }
-    
-    // ==================== DEBUG / UTILITY ====================
-    
     getStatus() {
         return {
             version: this.extensionVersion,
-            perkCount: this.state.acquired_perks.length,
-            totalCP: this.state.total_cp,
-            availableCP: this.state.available_cp,
-            corruption: this.state.corruption,
-            sanity: this.state.sanity,
-            hasUncapped: this.state.has_uncapped,
-            scalingPerks: this.state.acquired_perks
-                .filter(p => p.scaling)
-                .map(p => ({ name: p.name, level: p.scaling.level, uncapped: p.scaling.uncapped }))
+            enabled: this.getSettings().enabled,
+            perks: this.state.acquired_perks.length,
+            cp: this.state.total_cp,
+            uncapped: this.state.has_uncapped
         };
     }
 }
 
-// ==================== SILLYTAVERN EVENT HOOKS ====================
+// ==================== SILLYTAVERN INIT ====================
 
-function setupSillyTavernHooks() {
-    // Hook into SillyTavern's event system
-    if (typeof eventSource !== 'undefined') {
-        // Primary hook - when message is received
-        eventSource.on('MESSAGE_RECEIVED', (data) => {
-            if (window.celestialForge && data?.message) {
-                console.log('[Celestial Forge] Processing MESSAGE_RECEIVED');
-                window.celestialForge.processAIResponse(data.message);
-            }
-        });
-        
-        // Backup hook - when chat completion is done
-        eventSource.on('CHATCOMPLETION_DONE', (data) => {
-            if (window.celestialForge && data?.response) {
-                console.log('[Celestial Forge] Processing CHATCOMPLETION_DONE');
-                window.celestialForge.processAIResponse(data.response);
-            }
-        });
-        
-        console.log('[Celestial Forge] SillyTavern event hooks registered');
-    }
-    
-    // Alternative: jQuery-based message events
-    if (typeof jQuery !== 'undefined') {
-        jQuery(document).on('message_received.celestialforge', function(e, data) {
-            if (window.celestialForge && data?.mes) {
-                window.celestialForge.processAIResponse(data.mes);
-            }
-        });
-    }
-    
-    // Alternative: MutationObserver for chat container
-    const chatObserver = new MutationObserver((mutations) => {
-        for (const mutation of mutations) {
-            for (const node of mutation.addedNodes) {
-                if (node.nodeType === 1 && node.classList?.contains('mes')) {
-                    const mesText = node.querySelector('.mes_text')?.textContent;
-                    if (mesText && window.celestialForge) {
-                        window.celestialForge.processAIResponse(mesText);
-                    }
-                }
-            }
-        }
-    });
-    
-    // Start observing when chat container exists
-    const chatContainer = document.getElementById('chat');
-    if (chatContainer) {
-        chatObserver.observe(chatContainer, { childList: true, subtree: true });
-        console.log('[Celestial Forge] Chat observer started');
+let tracker = null;
+
+function loadSettings() {
+    extension_settings[extensionName] = extension_settings[extensionName] || {};
+    if (Object.keys(extension_settings[extensionName]).length === 0) {
+        Object.assign(extension_settings[extensionName], defaultSettings);
     }
 }
 
-/**
- * Get prompt injection text for Author's Note / System Prompt
- * Call this from SillyTavern's prompt injection settings
- */
-function getCelestialForgeInjection() {
-    if (!window.celestialForge) return '';
-    return window.celestialForge.generateContextBlock();
+function onMessageReceived(data) {
+    if (!tracker) return;
+    const text = typeof data === 'string' ? data : (data?.message || data?.mes || '');
+    if (text) tracker.processAIResponse(text);
 }
 
-/**
- * Get JSON-based injection (RECOMMENDED - consistent format)
- */
-function getCelestialForgeJSON() {
-    if (!window.celestialForge) return '';
-    return window.celestialForge.generateForgeBlockInjection();
+function onChatChanged() {
+    if (tracker) tracker.loadState();
 }
 
-/**
- * Get minimal injection (fewer tokens)
- */
-function getCelestialForgeMinimal() {
-    if (!window.celestialForge) return '';
-    return window.celestialForge.generateMinimalInjection();
-}
-
-// Export for both Node.js and browser
-if (typeof module !== 'undefined' && module.exports) {
-    module.exports = CelestialForgeTracker;
-}
-if (typeof window !== 'undefined') {
+// Initialize on jQuery ready
+jQuery(async () => {
+    loadSettings();
+    
+    tracker = new CelestialForgeTracker();
+    tracker.loadState();
+    
+    // Expose globally
+    window.celestialForge = tracker;
     window.CelestialForgeTracker = CelestialForgeTracker;
-    // Auto-initialize
-    window.celestialForge = new CelestialForgeTracker();
-    window.celestialForge.loadState();
+    window.getCelestialForgeInjection = () => tracker?.generateContextBlock() || '';
+    window.getCelestialForgeJSON = () => tracker?.generateForgeBlockInjection() || '';
     
-    // Expose injection helpers (multiple options!)
-    window.getCelestialForgeInjection = getCelestialForgeInjection; // Text format
-    window.getCelestialForgeJSON = getCelestialForgeJSON;           // JSON format (recommended!)
-    window.getCelestialForgeMinimal = getCelestialForgeMinimal;     // Minimal tokens
+    // Register ST events
+    eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
+    eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
     
-    // Setup hooks on DOM ready
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', setupSillyTavernHooks);
-    } else {
-        setTimeout(setupSillyTavernHooks, 100); // Slight delay to ensure ST is ready
-    }
-    
-    console.log('[Celestial Forge v9] Initialized!', window.celestialForge.getStatus());
-}
+    console.log('[Celestial Forge Tracker v9.1] Ready!', tracker.getStatus());
+});
+
+export { CelestialForgeTracker };
