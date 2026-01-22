@@ -1661,7 +1661,7 @@ function generateSimTrackerJSON(inStoryDate = '') {
     const thresholdProgress = totalCP % settings.thresholdCP;
     const thresholdPercent = Math.round((thresholdProgress / settings.thresholdCP) * 100);
     
-    // Build perks array with full data (v5 format)
+    // Build perks array with full data
     const perksArray = state.acquiredPerks.map(p => ({
         name: p.name,
         cost: p.cost,
@@ -1674,16 +1674,13 @@ function generateSimTrackerJSON(inStoryDate = '') {
     // Pending perk info
     const pendingRemaining = state.pendingPerk ? Math.max(0, state.pendingPerkCost - availableCP) : 0;
     
-    // v5 FORMAT: SimTracker-compatible nested structure
+    // v7 FORMAT: SimTracker-compatible with characterName (not name!)
     const simData = {
-        worldData: {
-            current_date: inStoryDate || 'Unknown',
-            response_count: state.responseCount
-        },
         characters: [
             {
-                name: 'Smith',
+                characterName: 'Smith',
                 currentDateTime: inStoryDate || 'Unknown',
+                bgColor: '#e94560',
                 stats: {
                     total_cp: totalCP,
                     available_cp: availableCP,
@@ -1696,8 +1693,7 @@ function generateSimTrackerJSON(inStoryDate = '') {
                     perks: perksArray,
                     pending_perk: state.pendingPerk || '',
                     pending_cp: state.pendingPerkCost || 0,
-                    pending_remaining: pendingRemaining,
-                    response_count: state.responseCount
+                    pending_remaining: pendingRemaining
                 }
             }
         ]
