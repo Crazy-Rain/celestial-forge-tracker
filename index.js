@@ -1,8 +1,14 @@
 // Celestial Forge Tracker v9.1 - SillyTavern Extension
 // Compatible with ST's extension system
 
-import { eventSource, event_types, saveSettingsDebounced } from "../../../../script.js";
-import { extension_settings, getContext } from "../../../extensions.js";
+import { eventSource, event_types } from "../../../../script.js";
+import {
+    extension_settings,
+    getContext,
+    registerExtension,
+    addExtensionSettings
+} from "../../../extensions.js";
+
 
 const extensionName = "celestial-forge-tracker";
 const extensionFolderPath = `scripts/extensions/third_party/${extensionName}`;
@@ -516,22 +522,43 @@ function onChatChanged() {
 
 // Initialize on jQuery ready
 jQuery(async () => {
+
+    registerExtension({
+        name: extensionName,
+        display_name: "Celestial Forge Tracker",
+        version: "9.1.0",
+        author: "Claude & LO",
+        description: "Tracks Celestial Forge CP, perks, thresholds, and injections."
+    });
+
+    addExtensionSettings(extensionName, {
+        enabled: {
+            type: "checkbox",
+            label: "Enable Celestial Forge Tracker",
+            default: true,
+        },
+        debug_mode: {
+            type: "checkbox",
+            label: "Enable Debug Logging",
+            default: false,
+        }
+    });
+
     loadSettings();
-    
+
     tracker = new CelestialForgeTracker();
     tracker.loadState();
-    
-    // Expose globally
+
     window.celestialForge = tracker;
     window.CelestialForgeTracker = CelestialForgeTracker;
     window.getCelestialForgeInjection = () => tracker?.generateContextBlock() || '';
     window.getCelestialForgeJSON = () => tracker?.generateForgeBlockInjection() || '';
-    
-    // Register ST events
+
     eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
     eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
-    
+
     console.log('[Celestial Forge Tracker v9.1] Ready!', tracker.getStatus());
 });
+
 
 export { CelestialForgeTracker };
