@@ -1,10 +1,10 @@
-// Update: Fix UI registration issue by using addExtensionSettings API
+// Importing addExtensionSettings for UI registration
+import { addExtensionSettings } from './path-to-extension-settings-file';
 
-function registerUI() {
-    const settings = { /* your settings here */ };
-    addExtensionSettings(settings);
-}
+// Refactored initialization to properly register with SillyTavern's modern API
+const initialize = () => {
+    // Assuming `modernAPI` is a function to register extensions
+    modernAPI.registerExtensions({ addExtensionSettings });
+};
 
-// Existing code
-// const element = document.getElementById('register');
-// element.addEventListener('click', registerUI);
+initialize();
