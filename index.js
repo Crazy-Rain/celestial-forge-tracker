@@ -1,270 +1,1185 @@
-// Celestial Forge Tracker – Hardened Version (v2.1)
+// Celestial Forge Tracker Extension v3.0 for SillyTavern
+// Rewritten for modern ST API (2024+)
 
-import {
-    extension_settings,
-    addExtensionSettings,
-    saveSettingsDebounced
-} from "../../../extensions.js";
+const MODULE_NAME = 'celestial-forge-tracker';
+const DEBUG = false;
 
-import {
-    eventSource,
-    event_types
-} from "../../../../script.js";
+function log(...args) {
+    if (DEBUG) console.log(`[${MODULE_NAME}]`, ...args);
+}
 
-const extensionName = "celestial-forge-tracker";
+function logError(...args) {
+    console.error(`[${MODULE_NAME}]`, ...args);
+}
 
-/* ============================
-   DEFAULT STRUCTURE
-   ============================ */
+// ============================================
+// DEFAULT SETTINGS & STATE STRUCTURE
+// ============================================
 
-const defaultChatState = {
-    totalCP: 0,
-    spentCP: 0,
-    perks: [],
-    checkpoints: [],
-    autoDetect: false
+const defaultSettings = {
+    enabled: true,
+    autoDetectPerks: true,
+    autoDetectCP: true,
+    cpPerResponse: 10,
+    thresholdCP: 100,
+    showNotifications: true,
+    perkArchive: [],
+    chatStates: {},
+    currentChatId: null
 };
 
-function ensureRoot() {
-    if (!extension_settings[extensionName]) {
-        extension_settings[extensionName] = { chats: {} };
+const defaultChatState = {
+    responseCount: 0,
+    bonusCP: 0,
+    spentCP: 0,
+    corruption: 0,
+    sanityErosion: 0,
+    pendingPerk: null,
+    pendingPerkCost: 0,
+    acquiredPerks: [],
+    activeToggles: [],
+    lastThresholdTriggered: 0,
+    checkpoints: [],
+    createdAt: null,
+    lastUpdated: null,
+    _pendingRollTrigger: null
+};
+
+// ============================================
+// REGEX PATTERNS FOR AUTO-DETECTION
+// ============================================
+
+const PERK_PATTERNS = [
+    /\*\*([A-Z][A-Z\s\-\']+)\*\*\s*\((\d+)\s*CP\)\s*[-–—:]\s*([^\[]+?)(?:\[([^\]]+)\])?/gi,
+    /\[ACQUIRED:\s*([A-Z][A-Z\s\-\']+)\s*[-–—]\s*(\d+)\s*CP\]/gi,
+    /(?:you\s+)?gain(?:ed|s)?\s+\*\*([A-Z][A-Z\s\-\']+)\*\*\s*\((\d+)\s*CP\)/gi,
+    /^([A-Z][A-Z\s\-\']{3,})\s*\((\d+)\s*CP\)\s*(?:\[([^\]]+)\])?\s*[-–—:]/gim,
+    /(?:forge\s+grants|acquired|unlocked|gained):\s*\*?\*?([A-Z][A-Z\s\-\']+)\*?\*?\s*\((\d+)\s*CP\)/gi
+];
+
+const CP_GAIN_PATTERNS = [
+    /\+(\d+)\s*(?:Bonus\s*)?CP/gi,
+    /Award:\s*\+?(\d+)\s*(?:Bonus\s*)?CP/gi,
+    /\[FORGE\s+RESONANCE[^\]]*\].*?\+(\d+)\s*(?:Bonus\s*)?CP/gi,
+    /(?:gains?|earned?|receives?|awarded?)\s+(\d+)\s*(?:Bonus\s*)?CP/gi
+];
+
+const CORRUPTION_PATTERNS = [
+    /\+(\d+)\s*Corruption/gi,
+    /Corruption:\s*\+(\d+)/gi,
+    /[-–—](\d+)\s*Corruption/gi
+];
+
+const SANITY_PATTERNS = [
+    /\+(\d+)\s*Sanity\s*(?:Erosion|Cost)/gi,
+    /Sanity\s*(?:Erosion|Cost):\s*\+(\d+)/gi
+];
+
+// ============================================
+// SETTINGS MANAGEMENT
+// ============================================
+
+function getSettings() {
+    const context = SillyTavern.getContext();
+    if (!context.extensionSettings[MODULE_NAME]) {
+        context.extensionSettings[MODULE_NAME] = JSON.parse(JSON.stringify(defaultSettings));
     }
+    return context.extensionSettings[MODULE_NAME];
 }
 
-/* ============================
-   CHAT STATE
-   ============================ */
-
-function getChatId() {
-    return window?.currentChatId ?? window?.chat_metadata?.chat_id ?? null;
+function saveSettings() {
+    const context = SillyTavern.getContext();
+    context.saveSettingsDebounced();
 }
 
-function getChatState() {
-    ensureRoot();
-    const chatId = getChatId();
+function getCurrentChatId() {
+    const context = SillyTavern.getContext();
+    if (!context.chatId) return null;
+    const charName = context.characters?.[context.characterId]?.name || 'unknown';
+    return `${charName}_${context.chatId}`;
+}
+
+function getCurrentState() {
+    const settings = getSettings();
+    const chatId = getCurrentChatId();
+    
     if (!chatId) return null;
-
-    if (!extension_settings[extensionName].chats[chatId]) {
-        extension_settings[extensionName].chats[chatId] =
-            structuredClone(defaultChatState);
+    
+    if (!settings.chatStates[chatId]) {
+        settings.chatStates[chatId] = {
+            ...JSON.parse(JSON.stringify(defaultChatState)),
+            createdAt: new Date().toISOString(),
+            lastUpdated: new Date().toISOString()
+        };
+        saveSettings();
     }
-    return extension_settings[extensionName].chats[chatId];
+    
+    return settings.chatStates[chatId];
 }
 
-/* ============================
-   UI CREATION
-   ============================ */
-
-function createUI() {
-    if ($("#celestial-forge-settings").length) return;
-
-    const html = `
-    <div id="celestial-forge-settings">
-      <div class="inline-drawer">
-        <div class="inline-drawer-toggle">
-          <b>Celestial Forge Tracker</b>
-        </div>
-
-        <div class="inline-drawer-content">
-
-          <div class="forge-tabs">
-            <div class="forge-tab active" data-tab="stats">Stats</div>
-            <div class="forge-tab" data-tab="perks">Perks</div>
-            <div class="forge-tab" data-tab="checkpoints">Checkpoints</div>
-          </div>
-
-          <div class="forge-tab-content active" data-tab-content="stats">
-            <div class="forge-panel">
-              <h4>Core Stats</h4>
-              <div class="forge-stat-row">
-                <label>Total CP</label>
-                <input id="forge-total-cp" type="number" class="forge-input-small">
-              </div>
-              <div class="forge-stat-row">
-                <label>Spent CP</label>
-                <input id="forge-spent-cp" type="number" class="forge-input-small">
-              </div>
-              <div class="forge-stat-row">
-                <label>Remaining</label>
-                <span id="forge-remaining-cp" class="forge-highlight">0</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="forge-tab-content" data-tab-content="perks">
-            <div class="forge-panel">
-              <h4>Perks</h4>
-              <div id="forge-perk-list" class="forge-scrollable"></div>
-              <div class="forge-actions">
-                <input id="forge-new-perk-name" class="forge-input-wide" placeholder="Perk name">
-                <input id="forge-new-perk-cost" class="forge-input-small" type="number" placeholder="Cost">
-                <button id="forge-add-perk" class="forge-btn-primary">Add</button>
-              </div>
-            </div>
-          </div>
-
-          <div class="forge-tab-content" data-tab-content="checkpoints">
-            <div class="forge-panel">
-              <h4>Checkpoints</h4>
-              <button id="forge-save-checkpoint" class="forge-btn-primary">
-                Save Checkpoint
-              </button>
-              <div id="forge-checkpoint-list"></div>
-            </div>
-          </div>
-
-        </div>
-      </div>
-    </div>
-    `;
-
-    addExtensionSettings({
-        id: extensionName,
-        name: "Celestial Forge Tracker",
-        html
-    });
-
-    bindUI();
-    refreshUI();
+function getTotalCP(state = null) {
+    state = state || getCurrentState();
+    if (!state) return 0;
+    const settings = getSettings();
+    return (state.responseCount * settings.cpPerResponse) + state.bonusCP;
 }
 
-/* ============================
-   UI BINDINGS
-   ============================ */
+function getAvailableCP(state = null) {
+    state = state || getCurrentState();
+    if (!state) return 0;
+    return getTotalCP(state) - state.spentCP;
+}
 
-function bindUI() {
-    $(document).on("click", ".forge-tab", function () {
-        const tab = $(this).data("tab");
-        $(".forge-tab").removeClass("active");
-        $(this).addClass("active");
-        $(".forge-tab-content").removeClass("active");
-        $(`[data-tab-content="${tab}"]`).addClass("active");
-    });
+// ============================================
+// PERK MANAGEMENT
+// ============================================
 
-    $("#forge-total-cp").on("input", function () {
-        const state = getChatState();
-        if (!state) return;
-        state.totalCP = Number(this.value) || 0;
-        saveSettingsDebounced();
-        refreshUI();
-    });
-
-    $("#forge-spent-cp").on("input", function () {
-        const state = getChatState();
-        if (!state) return;
-        state.spentCP = Number(this.value) || 0;
-        saveSettingsDebounced();
-        refreshUI();
-    });
-
-    $("#forge-add-perk").on("click", () => {
-        const state = getChatState();
-        if (!state) return;
-
-        const name = $("#forge-new-perk-name").val().trim();
-        const cost = Number($("#forge-new-perk-cost").val()) || 0;
-        if (!name) return;
-
-        state.perks.push({ name, cost, active: true });
-        state.spentCP += cost;
-
-        $("#forge-new-perk-name").val("");
-        $("#forge-new-perk-cost").val("");
-
-        saveSettingsDebounced();
-        refreshUI();
-    });
-
-    $("#forge-save-checkpoint").on("click", () => {
-        const state = getChatState();
-        if (!state) return;
-
-        state.checkpoints.push({
-            date: new Date().toISOString(),
-            snapshot: structuredClone(state)
+function addPerk(name, cost, description, flags = [], source = 'generated') {
+    const state = getCurrentState();
+    const settings = getSettings();
+    if (!state) return false;
+    
+    const perk = {
+        id: `perk_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        name: name.trim(),
+        cost: parseInt(cost) || 0,
+        description: (description || '').trim(),
+        flags: Array.isArray(flags) ? flags : String(flags).split(',').map(f => f.trim()).filter(f => f),
+        isToggleable: false,
+        isActive: false,
+        acquiredAt: state.responseCount,
+        acquiredDate: new Date().toISOString(),
+        source: source
+    };
+    
+    perk.isToggleable = perk.flags.some(f => 
+        f.toUpperCase().includes('TOGGLEABLE') || f.toUpperCase().includes('TOGGLE')
+    );
+    
+    if (perk.isToggleable) {
+        perk.isActive = true;
+        if (!state.activeToggles.includes(perk.name)) {
+            state.activeToggles.push(perk.name);
+        }
+    }
+    
+    state.acquiredPerks.push(perk);
+    state.spentCP += perk.cost;
+    state.lastUpdated = new Date().toISOString();
+    
+    // Add to global archive
+    const existingInArchive = settings.perkArchive.find(p => 
+        p.name.toLowerCase() === perk.name.toLowerCase()
+    );
+    if (!existingInArchive) {
+        settings.perkArchive.push({
+            ...perk,
+            timesAcquired: 1,
+            firstAcquired: new Date().toISOString()
         });
-
-        saveSettingsDebounced();
-        refreshUI();
-    });
+    } else {
+        existingInArchive.timesAcquired = (existingInArchive.timesAcquired || 1) + 1;
+    }
+    
+    saveSettings();
+    updateUI();
+    
+    if (settings.showNotifications) {
+        toastr.success(`Acquired: ${perk.name} (${perk.cost} CP)`, 'Celestial Forge');
+    }
+    
+    return perk;
 }
 
-/* ============================
-   RENDERING
-   ============================ */
+function removePerk(perkId) {
+    const state = getCurrentState();
+    if (!state) return false;
+    
+    const index = state.acquiredPerks.findIndex(p => p.id === perkId);
+    if (index > -1) {
+        const perk = state.acquiredPerks[index];
+        state.spentCP -= perk.cost;
+        
+        const toggleIndex = state.activeToggles.indexOf(perk.name);
+        if (toggleIndex > -1) {
+            state.activeToggles.splice(toggleIndex, 1);
+        }
+        
+        state.acquiredPerks.splice(index, 1);
+        state.lastUpdated = new Date().toISOString();
+        saveSettings();
+        updateUI();
+        return true;
+    }
+    return false;
+}
 
-function refreshUI() {
-    const state = getChatState();
+function togglePerk(perkId) {
+    const state = getCurrentState();
+    if (!state) return false;
+    
+    const perk = state.acquiredPerks.find(p => p.id === perkId);
+    if (perk && perk.isToggleable) {
+        perk.isActive = !perk.isActive;
+        
+        if (perk.isActive) {
+            if (!state.activeToggles.includes(perk.name)) {
+                state.activeToggles.push(perk.name);
+            }
+        } else {
+            const index = state.activeToggles.indexOf(perk.name);
+            if (index > -1) {
+                state.activeToggles.splice(index, 1);
+            }
+        }
+        
+        state.lastUpdated = new Date().toISOString();
+        saveSettings();
+        updateUI();
+        return true;
+    }
+    return false;
+}
+
+// ============================================
+// CP & TRACKER MANAGEMENT
+// ============================================
+
+function addBonusCP(amount, reason = '') {
+    const state = getCurrentState();
+    const settings = getSettings();
     if (!state) return;
-
-    $("#forge-total-cp").val(state.totalCP);
-    $("#forge-spent-cp").val(state.spentCP);
-    $("#forge-remaining-cp").text(state.totalCP - state.spentCP);
-
-    const perkList = $("#forge-perk-list").empty();
-    state.perks.forEach((perk, idx) => {
-        const el = $(`
-            <div class="forge-perk-item toggleable ${perk.active ? "active" : ""}">
-              <div class="forge-perk-header">
-                <strong>${perk.name}</strong>
-                <span class="forge-perk-cost">${perk.cost} CP</span>
-                <button class="forge-remove-btn">✖</button>
-              </div>
-            </div>
-        `);
-
-        el.on("click", () => {
-            perk.active = !perk.active;
-            saveSettingsDebounced();
-            refreshUI();
-        });
-
-        el.find(".forge-remove-btn").on("click", (e) => {
-            e.stopPropagation();
-            state.spentCP -= perk.cost;
-            state.perks.splice(idx, 1);
-            saveSettingsDebounced();
-            refreshUI();
-        });
-
-        perkList.append(el);
-    });
-
-    const cpList = $("#forge-checkpoint-list").empty();
-    state.checkpoints.forEach((cp, idx) => {
-        const el = $(`
-          <div class="forge-checkpoint-item">
-            <div class="forge-checkpoint-info">
-              <strong>Checkpoint ${idx + 1}</strong>
-              <div class="forge-checkpoint-date">${cp.date}</div>
-            </div>
-            <button class="forge-restore-btn">Restore</button>
-          </div>
-        `);
-
-        el.find(".forge-restore-btn").on("click", () => {
-            const chatId = getChatId();
-            extension_settings[extensionName].chats[chatId] =
-                structuredClone(cp.snapshot);
-            saveSettingsDebounced();
-            refreshUI();
-        });
-
-        cpList.append(el);
-    });
+    
+    amount = parseInt(amount) || 0;
+    state.bonusCP += amount;
+    state.lastUpdated = new Date().toISOString();
+    saveSettings();
+    updateUI();
+    
+    if (settings.showNotifications && amount !== 0) {
+        const sign = amount > 0 ? '+' : '';
+        toastr.info(`${sign}${amount} CP${reason ? ` (${reason})` : ''}`, 'Celestial Forge');
+    }
+    
+    checkThreshold();
 }
 
-/* ============================
-   INIT
-   ============================ */
+function setCP(totalCP) {
+    const state = getCurrentState();
+    const settings = getSettings();
+    if (!state) return;
+    
+    const baseCP = state.responseCount * settings.cpPerResponse;
+    const neededBonus = totalCP - baseCP + state.spentCP;
+    
+    state.bonusCP = Math.max(0, neededBonus);
+    state.lastUpdated = new Date().toISOString();
+    saveSettings();
+    updateUI();
+}
+
+function modifyCorruption(amount) {
+    const state = getCurrentState();
+    const settings = getSettings();
+    if (!state) return;
+    
+    state.corruption = Math.max(0, Math.min(100, state.corruption + amount));
+    state.lastUpdated = new Date().toISOString();
+    saveSettings();
+    updateUI();
+    
+    if (settings.showNotifications && amount !== 0) {
+        const sign = amount > 0 ? '+' : '';
+        toastr.warning(`Corruption: ${sign}${amount} (now ${state.corruption}/100)`, 'Celestial Forge');
+    }
+}
+
+function modifySanity(amount) {
+    const state = getCurrentState();
+    const settings = getSettings();
+    if (!state) return;
+    
+    state.sanityErosion = Math.max(0, Math.min(100, state.sanityErosion + amount));
+    state.lastUpdated = new Date().toISOString();
+    saveSettings();
+    updateUI();
+    
+    if (settings.showNotifications && amount !== 0) {
+        const sign = amount > 0 ? '+' : '';
+        toastr.warning(`Sanity Erosion: ${sign}${amount} (now ${state.sanityErosion}/100)`, 'Celestial Forge');
+    }
+}
+
+function setPendingPerk(name, cost) {
+    const state = getCurrentState();
+    if (!state) return;
+    
+    state.pendingPerk = name;
+    state.pendingPerkCost = parseInt(cost) || 0;
+    state.lastUpdated = new Date().toISOString();
+    saveSettings();
+    updateUI();
+}
+
+function clearPendingPerk() {
+    const state = getCurrentState();
+    if (!state) return;
+    
+    state.pendingPerk = null;
+    state.pendingPerkCost = 0;
+    state.lastUpdated = new Date().toISOString();
+    saveSettings();
+    updateUI();
+}
+
+function incrementResponseCount() {
+    const state = getCurrentState();
+    if (!state) return;
+    
+    state.responseCount++;
+    state.lastUpdated = new Date().toISOString();
+    saveSettings();
+    updateUI();
+    checkThreshold();
+}
+
+function setResponseCount(count) {
+    const state = getCurrentState();
+    if (!state) return;
+    
+    state.responseCount = Math.max(0, parseInt(count) || 0);
+    state.lastUpdated = new Date().toISOString();
+    saveSettings();
+    updateUI();
+}
+
+// ============================================
+// THRESHOLD & ROLL SYSTEM
+// ============================================
+
+function checkThreshold() {
+    const state = getCurrentState();
+    const settings = getSettings();
+    if (!state) return false;
+    
+    const totalCP = getTotalCP(state);
+    const currentThresholds = Math.floor(totalCP / settings.thresholdCP);
+    
+    if (currentThresholds > state.lastThresholdTriggered) {
+        state.lastThresholdTriggered = currentThresholds;
+        state.lastUpdated = new Date().toISOString();
+        saveSettings();
+        
+        if (settings.showNotifications) {
+            toastr.info(
+                `The Celestial Forge resonates... (${settings.thresholdCP} CP threshold reached!)`, 
+                'Forge Resonance',
+                { timeOut: 5000 }
+            );
+        }
+        
+        return true;
+    }
+    return false;
+}
+
+function triggerManualRoll() {
+    const state = getCurrentState();
+    if (!state) return;
+    
+    const availableCP = getAvailableCP(state);
+    
+    state._pendingRollTrigger = `\n\n[CELESTIAL FORGE - MANUAL ROLL TRIGGERED]
+The Smith calls upon the Forge. Available CP: ${availableCP}
+Roll a constellation and generate an appropriate perk. Follow the generation guidelines.
+Format new perks as: **PERK NAME** (XXX CP) - Description [FLAGS]
+If the rolled perk costs more than available CP, set it as PENDING.
+[END FORGE TRIGGER]\n`;
+    
+    saveSettings();
+    toastr.info('Roll triggered! Send your next message to activate.', 'Celestial Forge');
+}
+
+// ============================================
+// AUTO-DETECTION
+// ============================================
+
+function parseMessageForPerks(messageText) {
+    const detectedPerks = [];
+    
+    for (const pattern of PERK_PATTERNS) {
+        pattern.lastIndex = 0;
+        let match;
+        while ((match = pattern.exec(messageText)) !== null) {
+            const perkData = {
+                name: match[1]?.trim(),
+                cost: parseInt(match[2]) || 0,
+                description: match[3]?.trim() || '',
+                flags: match[4]?.split(',').map(f => f.trim()).filter(f => f) || []
+            };
+            
+            if (perkData.name && perkData.name.length > 2 && perkData.name.length < 100 &&
+                perkData.cost >= 0 && perkData.cost <= 2000) {
+                if (!detectedPerks.find(p => p.name.toLowerCase() === perkData.name.toLowerCase())) {
+                    detectedPerks.push(perkData);
+                }
+            }
+        }
+    }
+    
+    return detectedPerks;
+}
+
+function parseMessageForCPGains(messageText) {
+    let totalGain = 0;
+    
+    for (const pattern of CP_GAIN_PATTERNS) {
+        pattern.lastIndex = 0;
+        let match;
+        while ((match = pattern.exec(messageText)) !== null) {
+            const amount = parseInt(match[1]) || 0;
+            if (amount > 0 && amount <= 500) {
+                totalGain += amount;
+            }
+        }
+    }
+    
+    return totalGain;
+}
+
+function parseMessageForCorruption(messageText) {
+    let change = 0;
+    
+    for (const pattern of CORRUPTION_PATTERNS) {
+        pattern.lastIndex = 0;
+        let match;
+        while ((match = pattern.exec(messageText)) !== null) {
+            const amount = parseInt(match[1]) || 0;
+            if (pattern.source.includes('[-–—]')) {
+                change -= amount;
+            } else {
+                change += amount;
+            }
+        }
+    }
+    
+    return change;
+}
+
+function parseMessageForSanity(messageText) {
+    let change = 0;
+    
+    for (const pattern of SANITY_PATTERNS) {
+        pattern.lastIndex = 0;
+        let match;
+        while ((match = pattern.exec(messageText)) !== null) {
+            change += parseInt(match[1]) || 0;
+        }
+    }
+    
+    return change;
+}
+
+function processAIMessage(messageText) {
+    const settings = getSettings();
+    const state = getCurrentState();
+    if (!state || !settings.enabled) return;
+    
+    if (settings.autoDetectPerks) {
+        const detectedPerks = parseMessageForPerks(messageText);
+        for (const perkData of detectedPerks) {
+            const existing = state.acquiredPerks.find(p => 
+                p.name.toLowerCase() === perkData.name.toLowerCase()
+            );
+            
+            if (!existing) {
+                addPerk(perkData.name, perkData.cost, perkData.description, perkData.flags, 'auto-detected');
+            }
+        }
+    }
+    
+    if (settings.autoDetectCP) {
+        const cpGain = parseMessageForCPGains(messageText);
+        if (cpGain > 0) {
+            addBonusCP(cpGain, 'auto-detected');
+        }
+        
+        const corruptionChange = parseMessageForCorruption(messageText);
+        if (corruptionChange !== 0) {
+            modifyCorruption(corruptionChange);
+        }
+        
+        const sanityChange = parseMessageForSanity(messageText);
+        if (sanityChange !== 0) {
+            modifySanity(sanityChange);
+        }
+    }
+}
+
+// ============================================
+// CHECKPOINT SYSTEM
+// ============================================
+
+function createCheckpoint(label = '') {
+    const state = getCurrentState();
+    if (!state) return null;
+    
+    const checkpoint = {
+        id: `checkpoint_${Date.now()}`,
+        label: label || `Checkpoint at response ${state.responseCount}`,
+        createdAt: new Date().toISOString(),
+        state: JSON.parse(JSON.stringify({
+            responseCount: state.responseCount,
+            bonusCP: state.bonusCP,
+            spentCP: state.spentCP,
+            corruption: state.corruption,
+            sanityErosion: state.sanityErosion,
+            pendingPerk: state.pendingPerk,
+            pendingPerkCost: state.pendingPerkCost,
+            acquiredPerks: state.acquiredPerks,
+            activeToggles: state.activeToggles,
+            lastThresholdTriggered: state.lastThresholdTriggered
+        }))
+    };
+    
+    state.checkpoints.push(checkpoint);
+    
+    if (state.checkpoints.length > 10) {
+        state.checkpoints.shift();
+    }
+    
+    saveSettings();
+    updateUI();
+    
+    toastr.success(`Checkpoint created: ${checkpoint.label}`, 'Celestial Forge');
+    return checkpoint;
+}
+
+function restoreCheckpoint(checkpointId) {
+    const state = getCurrentState();
+    if (!state) return false;
+    
+    const checkpoint = state.checkpoints.find(c => c.id === checkpointId);
+    if (!checkpoint) return false;
+    
+    Object.assign(state, checkpoint.state);
+    state.lastUpdated = new Date().toISOString();
+    
+    saveSettings();
+    updateUI();
+    
+    toastr.info(`Restored to: ${checkpoint.label}`, 'Celestial Forge');
+    return true;
+}
+
+function deleteCheckpoint(checkpointId) {
+    const state = getCurrentState();
+    if (!state) return false;
+    
+    const index = state.checkpoints.findIndex(c => c.id === checkpointId);
+    if (index > -1) {
+        state.checkpoints.splice(index, 1);
+        saveSettings();
+        updateUI();
+        return true;
+    }
+    return false;
+}
+
+// ============================================
+// ARCHIVE FUNCTIONS
+// ============================================
+
+function getArchive() {
+    return getSettings().perkArchive || [];
+}
+
+function searchArchive(query) {
+    const archive = getArchive();
+    const lowerQuery = query.toLowerCase();
+    
+    return archive.filter(perk => 
+        perk.name.toLowerCase().includes(lowerQuery) ||
+        (perk.description || '').toLowerCase().includes(lowerQuery) ||
+        perk.flags.some(f => f.toLowerCase().includes(lowerQuery))
+    );
+}
+
+function acquireFromArchive(archivePerkId) {
+    const settings = getSettings();
+    const archivePerk = settings.perkArchive.find(p => p.id === archivePerkId);
+    
+    if (archivePerk) {
+        return addPerk(
+            archivePerk.name,
+            archivePerk.cost,
+            archivePerk.description,
+            archivePerk.flags,
+            'archive'
+        );
+    }
+    return null;
+}
+
+// ============================================
+// PROMPT INJECTION
+// ============================================
+
+function generateForgeStatus() {
+    const state = getCurrentState();
+    const settings = getSettings();
+    if (!state) return '';
+    
+    const totalCP = getTotalCP(state);
+    const availableCP = getAvailableCP(state);
+    const thresholdProgress = totalCP % settings.thresholdCP;
+    
+    let perkList = "None yet - the Forge awaits its first resonance.";
+    if (state.acquiredPerks.length > 0) {
+        perkList = state.acquiredPerks.map((perk, index) => {
+            let toggleStatus = '';
+            if (perk.isToggleable) {
+                toggleStatus = perk.isActive ? ' [ACTIVE]' : ' [INACTIVE]';
+            }
+            return `${index + 1}. ${perk.name} (${perk.cost} CP)${toggleStatus} - ${perk.description} [${perk.flags.join(', ')}]`;
+        }).join('\n');
+    }
+    
+    let toggleList = "None active";
+    if (state.activeToggles.length > 0) {
+        toggleList = state.activeToggles.join(', ');
+    }
+    
+    let pendingText = "None";
+    if (state.pendingPerk) {
+        const remaining = state.pendingPerkCost - availableCP;
+        pendingText = remaining > 0 
+            ? `${state.pendingPerk} (${state.pendingPerkCost} CP) - ${remaining} CP remaining to manifest`
+            : `${state.pendingPerk} (${state.pendingPerkCost} CP) - READY TO MANIFEST!`;
+    }
+    
+    let warnings = '';
+    if (state.corruption >= 75) {
+        warnings += '\n[WARNING: High corruption - dark aesthetics intensifying]';
+    } else if (state.corruption >= 50) {
+        warnings += '\n[Note: Moderate corruption - Dark Forge resonance strengthening]';
+    }
+    if (state.sanityErosion >= 75) {
+        warnings += '\n[WARNING: High sanity erosion - reality perception shifting]';
+    } else if (state.sanityErosion >= 50) {
+        warnings += '\n[Note: Moderate sanity erosion - Eldritch insights accumulating]';
+    }
+    
+    let status = `[CELESTIAL FORGE - CURRENT STATUS]
+Response Count: ${state.responseCount}
+Total CP Earned: ${totalCP} | Available: ${availableCP}
+(Base: ${state.responseCount * settings.cpPerResponse} + Bonus: ${state.bonusCP} - Spent: ${state.spentCP})
+Threshold Progress: ${thresholdProgress}/${settings.thresholdCP} CP until next resonance
+
+Corruption Level: ${state.corruption}/100
+Sanity Erosion: ${state.sanityErosion}/100${warnings}
+
+Pending Perk: ${pendingText}
+Currently Active Toggles: ${toggleList}
+
+ACQUIRED PERKS (${state.acquiredPerks.length}):
+${perkList}
+
+[Format new perks as: **PERK NAME** (XXX CP) - Description [FLAGS] for auto-detection.]`;
+
+    if (state._pendingRollTrigger) {
+        status += state._pendingRollTrigger;
+        state._pendingRollTrigger = null;
+        saveSettings();
+    }
+    
+    return status;
+}
+
+// ============================================
+// EVENT HANDLERS
+// ============================================
 
 function onChatChanged() {
-    createUI();
-    refreshUI();
+    log('Chat changed');
+    updateUI();
 }
 
+function onMessageReceived(messageId) {
+    const settings = getSettings();
+    if (!settings.enabled) return;
+    
+    const context = SillyTavern.getContext();
+    const message = context.chat?.[messageId];
+    
+    if (message && !message.is_user) {
+        incrementResponseCount();
+        
+        if (message.mes) {
+            processAIMessage(message.mes);
+        }
+    }
+}
+
+function onGenerationStarted() {
+    const settings = getSettings();
+    if (!settings.enabled) return;
+    
+    const forgeStatus = generateForgeStatus();
+    if (forgeStatus) {
+        const context = SillyTavern.getContext();
+        // Inject into prompt via chat injection
+        context.setExtensionPrompt(MODULE_NAME, forgeStatus, 1, 0);
+    }
+}
+
+// ============================================
+// UI CREATION & MANAGEMENT
+// ============================================
+
+function createSettingsHtml() {
+    return `
+    <div id="celestial-forge-settings" class="extension-settings">
+        <div class="inline-drawer">
+            <div class="inline-drawer-toggle inline-drawer-header">
+                <b>⚒️ Celestial Forge Tracker</b>
+                <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+            </div>
+            <div class="inline-drawer-content">
+                
+                <div class="forge-section">
+                    <h4>📊 Current Status</h4>
+                    <div class="forge-stat-grid">
+                        <div class="forge-stat">
+                            <label>Responses:</label>
+                            <span id="forge-responses">0</span>
+                            <button class="menu_button" id="forge-dec-response">-</button>
+                            <button class="menu_button" id="forge-inc-response">+</button>
+                        </div>
+                        <div class="forge-stat">
+                            <label>Total CP:</label>
+                            <span id="forge-total-cp">0</span>
+                        </div>
+                        <div class="forge-stat">
+                            <label>Available CP:</label>
+                            <span id="forge-available-cp">0</span>
+                        </div>
+                        <div class="forge-stat">
+                            <label>Set CP:</label>
+                            <input type="number" id="forge-set-cp" style="width:60px">
+                            <button class="menu_button" id="forge-apply-cp">Set</button>
+                        </div>
+                        <div class="forge-stat">
+                            <label>Add Bonus:</label>
+                            <input type="number" id="forge-add-bonus" style="width:60px" placeholder="+/-">
+                            <button class="menu_button" id="forge-apply-bonus">Add</button>
+                        </div>
+                    </div>
+                    
+                    <div class="forge-stat">
+                        <label>Corruption: <span id="forge-corruption-val">0</span>/100</label>
+                        <input type="range" id="forge-corruption" min="0" max="100" value="0" style="width:100%">
+                    </div>
+                    <div class="forge-stat">
+                        <label>Sanity Erosion: <span id="forge-sanity-val">0</span>/100</label>
+                        <input type="range" id="forge-sanity" min="0" max="100" value="0" style="width:100%">
+                    </div>
+                    
+                    <div class="forge-actions">
+                        <button class="menu_button" id="forge-roll-btn">⚡ Trigger Roll</button>
+                        <button class="menu_button" id="forge-checkpoint-btn">📌 Checkpoint</button>
+                    </div>
+                </div>
+                
+                <div class="forge-section">
+                    <h4>✨ Acquired Perks (<span id="forge-perk-count">0</span>)</h4>
+                    <div id="forge-perk-list" style="max-height:200px;overflow-y:auto;"></div>
+                    
+                    <h5>Add Perk</h5>
+                    <input type="text" id="forge-new-perk-name" placeholder="Name" style="width:100%;margin-bottom:5px">
+                    <input type="number" id="forge-new-perk-cost" placeholder="Cost" style="width:60px">
+                    <input type="text" id="forge-new-perk-flags" placeholder="FLAGS" style="width:calc(100% - 70px)">
+                    <textarea id="forge-new-perk-desc" placeholder="Description" style="width:100%;height:40px;margin:5px 0"></textarea>
+                    <button class="menu_button" id="forge-add-perk-btn" style="width:100%">Add Perk</button>
+                </div>
+                
+                <div class="forge-section">
+                    <h4>📚 Archive (<span id="forge-archive-count">0</span>)</h4>
+                    <input type="text" id="forge-archive-search" placeholder="Search archive..." style="width:100%;margin-bottom:5px">
+                    <div id="forge-archive-list" style="max-height:150px;overflow-y:auto;"></div>
+                </div>
+                
+                <div class="forge-section">
+                    <h4>📌 Checkpoints</h4>
+                    <div id="forge-checkpoint-list" style="max-height:100px;overflow-y:auto;"></div>
+                </div>
+                
+                <div class="forge-section">
+                    <h4>⚙️ Settings</h4>
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="forge-enabled" checked>
+                        <span>Enable Tracking</span>
+                    </label>
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="forge-auto-perks" checked>
+                        <span>Auto-detect Perks</span>
+                    </label>
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="forge-auto-cp" checked>
+                        <span>Auto-detect CP Gains</span>
+                    </label>
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="forge-notifications" checked>
+                        <span>Show Notifications</span>
+                    </label>
+                    <div class="forge-stat">
+                        <label>CP per Response:</label>
+                        <input type="number" id="forge-cp-rate" value="10" min="1" style="width:60px">
+                    </div>
+                    <div class="forge-stat">
+                        <label>Threshold CP:</label>
+                        <input type="number" id="forge-threshold" value="100" min="10" style="width:60px">
+                    </div>
+                    <div class="forge-actions" style="margin-top:10px">
+                        <button class="menu_button" id="forge-export">Export</button>
+                        <button class="menu_button" id="forge-import">Import</button>
+                        <button class="menu_button" id="forge-reset">Reset Chat</button>
+                    </div>
+                </div>
+                
+            </div>
+        </div>
+    </div>`;
+}
+
+function bindUIEvents() {
+    // Response controls
+    $('#forge-inc-response').off('click').on('click', () => incrementResponseCount());
+    $('#forge-dec-response').off('click').on('click', () => {
+        const state = getCurrentState();
+        if (state && state.responseCount > 0) {
+            state.responseCount--;
+            saveSettings();
+            updateUI();
+        }
+    });
+    
+    // CP controls
+    $('#forge-apply-cp').off('click').on('click', () => {
+        const val = parseInt($('#forge-set-cp').val());
+        if (!isNaN(val)) {
+            setCP(val);
+            $('#forge-set-cp').val('');
+        }
+    });
+    
+    $('#forge-apply-bonus').off('click').on('click', () => {
+        const val = parseInt($('#forge-add-bonus').val());
+        if (!isNaN(val)) {
+            addBonusCP(val, 'manual');
+            $('#forge-add-bonus').val('');
+        }
+    });
+    
+    // Corruption/Sanity sliders
+    $('#forge-corruption').off('input').on('input', function() {
+        const state = getCurrentState();
+        if (state) {
+            state.corruption = parseInt($(this).val());
+            $('#forge-corruption-val').text($(this).val());
+            saveSettings();
+        }
+    });
+    
+    $('#forge-sanity').off('input').on('input', function() {
+        const state = getCurrentState();
+        if (state) {
+            state.sanityErosion = parseInt($(this).val());
+            $('#forge-sanity-val').text($(this).val());
+            saveSettings();
+        }
+    });
+    
+    // Roll & Checkpoint
+    $('#forge-roll-btn').off('click').on('click', triggerManualRoll);
+    $('#forge-checkpoint-btn').off('click').on('click', () => createCheckpoint());
+    
+    // Add perk
+    $('#forge-add-perk-btn').off('click').on('click', () => {
+        const name = $('#forge-new-perk-name').val();
+        const cost = $('#forge-new-perk-cost').val();
+        const desc = $('#forge-new-perk-desc').val();
+        const flags = $('#forge-new-perk-flags').val();
+        
+        if (name) {
+            addPerk(name, cost, desc, flags, 'manual');
+            $('#forge-new-perk-name').val('');
+            $('#forge-new-perk-cost').val('');
+            $('#forge-new-perk-desc').val('');
+            $('#forge-new-perk-flags').val('');
+        }
+    });
+    
+    // Archive search
+    $('#forge-archive-search').off('input').on('input', function() {
+        updateArchiveUI($(this).val());
+    });
+    
+    // Settings
+    $('#forge-enabled').off('change').on('change', function() {
+        getSettings().enabled = $(this).prop('checked');
+        saveSettings();
+    });
+    $('#forge-auto-perks').off('change').on('change', function() {
+        getSettings().autoDetectPerks = $(this).prop('checked');
+        saveSettings();
+    });
+    $('#forge-auto-cp').off('change').on('change', function() {
+        getSettings().autoDetectCP = $(this).prop('checked');
+        saveSettings();
+    });
+    $('#forge-notifications').off('change').on('change', function() {
+        getSettings().showNotifications = $(this).prop('checked');
+        saveSettings();
+    });
+    $('#forge-cp-rate').off('change').on('change', function() {
+        getSettings().cpPerResponse = parseInt($(this).val()) || 10;
+        saveSettings();
+        updateUI();
+    });
+    $('#forge-threshold').off('change').on('change', function() {
+        getSettings().thresholdCP = parseInt($(this).val()) || 100;
+        saveSettings();
+        updateUI();
+    });
+    
+    // Export/Import/Reset
+    $('#forge-export').off('click').on('click', () => {
+        const state = getCurrentState();
+        if (state) {
+            const dataStr = JSON.stringify(state, null, 2);
+            const blob = new Blob([dataStr], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'celestial-forge-state.json';
+            a.click();
+        }
+    });
+    
+    $('#forge-import').off('click').on('click', () => {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json';
+        input.onchange = (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    try {
+                        const data = JSON.parse(event.target.result);
+                        const settings = getSettings();
+                        const chatId = getCurrentChatId();
+                        if (chatId) {
+                            settings.chatStates[chatId] = data;
+                            saveSettings();
+                            updateUI();
+                            toastr.success('State imported!', 'Celestial Forge');
+                        }
+                    } catch (err) {
+                        toastr.error('Import failed: ' + err.message);
+                    }
+                };
+                reader.readAsText(file);
+            }
+        };
+        input.click();
+    });
+    
+    $('#forge-reset').off('click').on('click', () => {
+        if (confirm('Reset Forge state for this chat?')) {
+            const settings = getSettings();
+            const chatId = getCurrentChatId();
+            if (chatId) {
+                settings.chatStates[chatId] = {
+                    ...JSON.parse(JSON.stringify(defaultChatState)),
+                    createdAt: new Date().toISOString(),
+                    lastUpdated: new Date().toISOString()
+                };
+                saveSettings();
+                updateUI();
+            }
+        }
+    });
+}
+
+function updateUI() {
+    const state = getCurrentState();
+    const settings = getSettings();
+    
+    if (!state) {
+        log('No state available');
+        return;
+    }
+    
+    const totalCP = getTotalCP(state);
+    const availableCP = getAvailableCP(state);
+    
+    $('#forge-responses').text(state.responseCount);
+    $('#forge-total-cp').text(totalCP);
+    $('#forge-available-cp').text(availableCP);
+    $('#forge-corruption').val(state.corruption);
+    $('#forge-corruption-val').text(state.corruption);
+    $('#forge-sanity').val(state.sanityErosion);
+    $('#forge-sanity-val').text(state.sanityErosion);
+    
+    // Settings
+    $('#forge-enabled').prop('checked', settings.enabled);
+    $('#forge-auto-perks').prop('checked', settings.autoDetectPerks);
+    $('#forge-auto-cp').prop('checked', settings.autoDetectCP);
+    $('#forge-notifications').prop('checked', settings.showNotifications);
+    $('#forge-cp-rate').val(settings.cpPerResponse);
+    $('#forge-threshold').val(settings.thresholdCP);
+    
+    // Perks
+    $('#forge-perk-count').text(state.acquiredPerks.length);
+    updatePerkListUI();
+    updateArchiveUI();
+    updateCheckpointUI();
+}
+
+function updatePerkListUI() {
+    const state = getCurrentState();
+    if (!state) return;
+    
+    const html = state.acquiredPerks.map(perk => {
+        const toggleBtn = perk.isToggleable 
+            ? `<button class="menu_button forge-toggle" data-id="${perk.id}" style="padding:2px 5px;font-size:10px">${perk.isActive ? '🟢' : '🔴'}</button>`
+            : '';
+        
+        return `<div style="padding:5px;margin:3px 0;border:1px solid var(--SmartThemeBorderColor);border-radius:3px;font-size:11px;">
+            <strong>${perk.name}</strong> (${perk.cost}CP) ${toggleBtn}
+            <button class="menu_button forge-remove-perk" data-id="${perk.id}" style="float:right;padding:2px 5px;font-size:10px">×</button>
+            <div style="color:#888;font-size:10px">${perk.description || 'No description'}</div>
+            <div style="color:#666;font-size:9px">[${perk.flags.join(', ') || 'No flags'}]</div>
+        </div>`;
+    }).join('') || '<div style="color:#888;text-align:center;padding:10px">No perks yet</div>';
+    
+    $('#forge-perk-list').html(html);
+    
+    $('.forge-toggle').off('click').on('click', function() {
+        togglePerk($(this).data('id'));
+    });
+    
+    $('.forge-remove-perk').off('click').on('click', function() {
+        if (confirm('Remove this perk?')) {
+            removePerk($(this).data('id'));
+        }
+    });
+}
+
+function updateArchiveUI(searchQuery = '') {
+    const settings = getSettings();
+    const archive = searchQuery ? searchArchive(searchQuery) : settings.perkArchive;
+    
+    $('#forge-archive-count').text(settings.perkArchive.length);
+    
+    const html = archive.slice(0, 20).map(perk => 
+        `<div style="padding:3px;margin:2px 0;border:1px solid var(--SmartThemeBorderColor);border-radius:2px;font-size:10px;cursor:pointer" class="forge-archive-item" data-id="${perk.id}">
+            <strong>${perk.name}</strong> (${perk.cost}CP)
+        </div>`
+    ).join('') || '<div style="color:#888;text-align:center;padding:5px;font-size:10px">No perks in archive</div>';
+    
+    $('#forge-archive-list').html(html);
+    
+    $('.forge-archive-item').off('click').on('click', function() {
+        if (confirm('Acquire this perk from archive?')) {
+            acquireFromArchive($(this).data('id'));
+        }
+    });
+}
+
+function updateCheckpointUI() {
+    const state = getCurrentState();
+    if (!state) return;
+    
+    const html = state.checkpoints.map(cp => 
+        `<div style="padding:3px;margin:2px 0;border:1px solid var(--SmartThemeBorderColor);border-radius:2px;font-size:10px">
+            ${cp.label}
+            <button class="menu_button forge-restore-cp" data-id="${cp.id}" style="float:right;padding:1px 4px;font-size:9px">↩️</button>
+        </div>`
+    ).join('') || '<div style="color:#888;text-align:center;padding:5px;font-size:10px">No checkpoints</div>';
+    
+    $('#forge-checkpoint-list').html(html);
+    
+    $('.forge-restore-cp').off('click').on('click', function() {
+        if (confirm('Restore to this checkpoint?')) {
+            restoreCheckpoint($(this).data('id'));
+        }
+    });
+}
+
+// ============================================
+// INITIALIZATION
+// ============================================
+
 (function init() {
-    ensureRoot();
-    eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
-    setTimeout(onChatChanged, 500);
+    // Wait for SillyTavern to be ready
+    const checkReady = setInterval(() => {
+        if (typeof SillyTavern !== 'undefined' && SillyTavern.getContext) {
+            clearInterval(checkReady);
+            
+            const context = SillyTavern.getContext();
+            
+            // Append settings HTML to the extensions settings area
+            const settingsHtml = createSettingsHtml();
+            $('#extensions_settings2').append(settingsHtml);
+            
+            // Bind events
+            bindUIEvents();
+            
+            // Listen to ST events
+            context.eventSource.on(context.eventTypes.CHAT_CHANGED, onChatChanged);
+            context.eventSource.on(context.eventTypes.MESSAGE_RECEIVED, onMessageReceived);
+            context.eventSource.on(context.eventTypes.GENERATION_STARTED, onGenerationStarted);
+            
+            // Initial UI update
+            setTimeout(updateUI, 500);
+            
+            log('Extension initialized!');
+            console.log(`[${MODULE_NAME}] Celestial Forge Tracker v3.0 loaded!`);
+        }
+    }, 100);
 })();
+
+// ============================================
+// GLOBAL API
+// ============================================
+
+window.CelestialForge = {
+    addPerk,
+    removePerk,
+    togglePerk,
+    addBonusCP,
+    setCP,
+    modifyCorruption,
+    modifySanity,
+    setPendingPerk,
+    clearPendingPerk,
+    incrementResponseCount,
+    setResponseCount,
+    triggerManualRoll,
+    createCheckpoint,
+    restoreCheckpoint,
+    getArchive,
+    searchArchive,
+    acquireFromArchive,
+    getCurrentState,
+    getSettings,
+    getTotalCP,
+    getAvailableCP,
+    generateForgeStatus,
+    parseMessageForPerks,
+    parseMessageForCPGains,
+    updateUI
+};
