@@ -568,11 +568,29 @@ function parseLoomledger(messageText) {
                 result.pendingCost = char.pending_cp ?? null;
                 result.pendingRemaining = char.pending_remaining ?? null;
                 
-                // Active toggles (comma-separated string)
-                result.activeToggles = char.active_toggles || null;
+                // ============================================
+                // NEW v4 FORMAT: perks as array of objects
+                // ============================================
+                if (char.perks && Array.isArray(char.perks)) {
+                    for (const perk of char.perks) {
+                        if (perk.name) {
+                            result.perks.push({
+                                name: perk.name,
+                                cost: perk.cost || 0,
+                                description: perk.description || '',
+                                flags: Array.isArray(perk.flags) ? perk.flags : [],
+                                toggleable: perk.toggleable === true,
+                                active: perk.active !== false // default to true
+                            });
+                        }
+                    }
+                    log('Parsed perks array format:', result.perks.length, 'perks');
+                }
                 
-                // CRITICAL: Parse perks_list (pipe-separated: "PERK1 (100 CP)|PERK2 (200 CP)")
-                if (char.perks_list && typeof char.perks_list === 'string' && char.perks_list.trim()) {
+                // ============================================
+                // LEGACY: perks_list as pipe-separated string
+                // ============================================
+                else if (char.perks_list && typeof char.perks_list === 'string' && char.perks_list.trim()) {
                     result.perksList = char.perks_list;
                     const perkStrings = char.perks_list.split('|').map(s => s.trim()).filter(s => s);
                     
@@ -583,10 +601,32 @@ function parseLoomledger(messageText) {
                             const name = perkMatch[1].trim();
                             const cost = parseInt(perkMatch[2]) || 0;
                             if (name && !result.perks.find(p => p.name.toLowerCase() === name.toLowerCase())) {
-                                result.perks.push({ name, cost, description: '', flags: [] });
+                                result.perks.push({ 
+                                    name, 
+                                    cost, 
+                                    description: '', 
+                                    flags: [],
+                                    toggleable: false,
+                                    active: true
+                                });
                             }
                         }
                     }
+                    log('Parsed legacy perks_list format:', result.perks.length, 'perks');
+                }
+                
+                // Build activeToggles from perks array if available
+                if (result.perks.length > 0) {
+                    const activeToggleNames = result.perks
+                        .filter(p => p.toggleable && p.active)
+                        .map(p => p.name);
+                    if (activeToggleNames.length > 0) {
+                        result.activeToggles = activeToggleNames.join(', ');
+                    }
+                }
+                // Fallback to active_toggles string from JSON
+                else if (char.active_toggles) {
+                    result.activeToggles = char.active_toggles;
                 }
             }
             
@@ -709,23 +749,76 @@ function processAIMessage(messageText) {
             }
         }
         
-        // Sync active toggles
-        if (ledgerData.activeToggles !== null) {
-            const newToggles = ledgerData.activeToggles.split(',').map(t => t.trim()).filter(t => t);
-            if (JSON.stringify(newToggles.sort()) !== JSON.stringify(state.activeToggles.sort())) {
-                state.activeToggles = newToggles;
-                synced.push(`toggles→[${newToggles.length}]`);
-            }
-        }
-        
-        // Add perks from forge block that we don't have
+        // Add perks from forge block that we don't have - WITH FULL DATA!
         for (const perkData of ledgerData.perks) {
             const existing = state.acquiredPerks.find(p => 
                 p.name.toLowerCase() === perkData.name.toLowerCase()
             );
+            
             if (!existing) {
-                addPerk(perkData.name, perkData.cost, perkData.description, perkData.flags, 'forge-sync');
-                synced.push(`+perk:${perkData.name}`);
+                // Use the new addPerk signature that accepts full perk data
+                const perk = {
+                    id: `perk_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                    name: perkData.name.trim(),
+                    cost: parseInt(perkData.cost) || 0,
+                    description: perkData.description || '',
+                    flags: perkData.flags || [],
+                    isToggleable: perkData.toggleable === true || 
+                                  (perkData.flags && perkData.flags.some(f => 
+                                      f.toUpperCase().includes('TOGGLE'))),
+                    isActive: perkData.active !== false,
+                    acquiredAt: state.responseCount,
+                    acquiredDate: new Date().toISOString(),
+                    source: 'forge-sync'
+                };
+                
+                state.acquiredPerks.push(perk);
+                state.spentCP += perk.cost;
+                
+                // Track active toggles
+                if (perk.isToggleable && perk.isActive) {
+                    if (!state.activeToggles.includes(perk.name)) {
+                        state.activeToggles.push(perk.name);
+                    }
+                }
+                
+                synced.push(`+perk:${perk.name}${perk.isToggleable ? ' [T]' : ''}`);
+                
+                if (settings.showNotifications) {
+                    toastr.success(
+                        `Acquired: ${perk.name} (${perk.cost} CP)${perk.isToggleable ? ' [Toggleable]' : ''}`, 
+                        'Celestial Forge'
+                    );
+                }
+            } else {
+                // Update existing perk's toggle state if it changed
+                if (existing.isToggleable && perkData.active !== undefined) {
+                    if (existing.isActive !== perkData.active) {
+                        existing.isActive = perkData.active;
+                        
+                        // Update activeToggles array
+                        const toggleIndex = state.activeToggles.indexOf(existing.name);
+                        if (perkData.active && toggleIndex === -1) {
+                            state.activeToggles.push(existing.name);
+                        } else if (!perkData.active && toggleIndex > -1) {
+                            state.activeToggles.splice(toggleIndex, 1);
+                        }
+                        
+                        synced.push(`toggle:${existing.name}→${perkData.active ? 'ON' : 'OFF'}`);
+                    }
+                }
+                
+                // Update description/flags if they were empty and now have data
+                if (!existing.description && perkData.description) {
+                    existing.description = perkData.description;
+                }
+                if ((!existing.flags || existing.flags.length === 0) && perkData.flags && perkData.flags.length > 0) {
+                    existing.flags = perkData.flags;
+                    // Check if it should now be toggleable
+                    if (perkData.flags.some(f => f.toUpperCase().includes('TOGGLE'))) {
+                        existing.isToggleable = true;
+                    }
+                }
             }
         }
         
@@ -1561,11 +1654,15 @@ function generateSimTrackerJSON(inStoryDate = '') {
     const thresholdProgress = totalCP % settings.thresholdCP;
     const thresholdPercent = Math.round((thresholdProgress / settings.thresholdCP) * 100);
     
-    // Build perks list (pipe-separated)
-    const perksList = state.acquiredPerks.map(p => `${p.name} (${p.cost} CP)`).join('|') || '';
-    
-    // Build active toggles list (comma-separated)
-    const activeToggles = state.activeToggles.join(', ') || '';
+    // Build perks array with full data (v4 format)
+    const perksArray = state.acquiredPerks.map(p => ({
+        name: p.name,
+        cost: p.cost,
+        flags: p.flags || [],
+        description: p.description || '',
+        toggleable: p.isToggleable || false,
+        active: p.isActive !== false
+    }));
     
     // Pending perk info
     const pendingRemaining = state.pendingPerk ? Math.max(0, state.pendingPerkCost - availableCP) : 0;
@@ -1586,8 +1683,7 @@ function generateSimTrackerJSON(inStoryDate = '') {
                 corruption: state.corruption,
                 sanity: state.sanityErosion,
                 perk_count: state.acquiredPerks.length,
-                perks_list: perksList,
-                active_toggles: activeToggles,
+                perks: perksArray,
                 pending_perk: state.pendingPerk || '',
                 pending_cp: state.pendingPerkCost || 0,
                 pending_remaining: pendingRemaining
