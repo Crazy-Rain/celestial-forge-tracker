@@ -5,8 +5,7 @@ import { eventSource, event_types } from "../../../../script.js";
 import {
     extension_settings,
     getContext,
-    registerExtension,
-    addExtensionSettings
+    registerExtension
 } from "../../../extensions.js";
 
 
@@ -529,19 +528,6 @@ jQuery(async () => {
         version: "9.1.0",
         author: "Claude & LO",
         description: "Tracks Celestial Forge CP, perks, thresholds, and injections."
-    });
-
-    addExtensionSettings(extensionName, {
-        enabled: {
-            type: "checkbox",
-            label: "Enable Celestial Forge Tracker",
-            default: true,
-        },
-        debug_mode: {
-            type: "checkbox",
-            label: "Enable Debug Logging",
-            default: false,
-        }
     });
 
     loadSettings();
