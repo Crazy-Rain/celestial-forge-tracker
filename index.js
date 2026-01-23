@@ -579,7 +579,7 @@ function getSettingsHtml() {
                     </label>
                     <label class="checkbox_label" for="cf-auto-parse">
                         <input type="checkbox" id="cf-auto-parse" />
-                        <span>Auto-parse ```forge blocks</span>
+                        <span>Auto-parse forge blocks</span>
                     </label>
                     <label class="checkbox_label" for="cf-simtracker-sync">
                         <input type="checkbox" id="cf-simtracker-sync" />
