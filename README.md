@@ -1,58 +1,69 @@
-# Celestial Forge Tracker v3.0
+# Celestial Forge Tracker v9.2
 
-A SillyTavern extension for tracking the Celestial Forge progression system.
-
-**Rewritten for modern SillyTavern API (2024+)**
+A SillyTavern extension for tracking Celestial Forge progression in jumpchain-style stories.
 
 ## Features
 
-- **Automatic Response Counting**: Every AI message = +10 CP (configurable)
-- **Auto-Detection**: Captures perks, CP gains, corruption, and sanity from AI messages
-- **Per-Chat State**: Each chat has independent tracking
-- **Perk Archive**: All perks saved globally across chats
-- **Checkpoint System**: Save/restore for branching narratives
-- **Manual Roll Trigger**: Inject roll prompts on demand
+- **CP Tracking**: Automatically tracks Creation Points per AI response
+- **Perk Management**: Detects and tracks perk acquisitions from narrative
+- **Scaling System**: Full support for SCALING perks with XP and level progression
+- **UNCAPPED Support**: When acquired, removes level caps from all scaling perks
+- **Corruption & Sanity**: Tracks both stats with automatic detection
+- **Forge Block Parsing**: Parses ```forge JSON blocks for bidirectional sync
+- **SimTracker Integration**: Syncs state to SimTracker for visual display
+- **Context Injection**: Provides `getCelestialForgeInjection()` and `getCelestialForgeJSON()` for AI context
 
 ## Installation
 
-### Via GitHub URL (Recommended)
-1. In SillyTavern, go to Extensions
-2. Click "Install extension"
-3. Paste: `https://github.com/Crazy-Rain/celestial-forge-tracker`
-4. Restart SillyTavern
-
-### Manual Installation
-1. Clone/download to: `SillyTavern/public/scripts/extensions/third-party/celestial-forge-tracker/`
-2. Ensure files are at root level (index.js, manifest.json, style.css)
-3. Restart SillyTavern
+1. Download and extract to `SillyTavern/public/scripts/extensions/third_party/celestial-forge-tracker/`
+2. Restart SillyTavern
+3. Find "Celestial Forge Tracker" in the Extensions panel
 
 ## Usage
 
-Find the **⚒️ Celestial Forge Tracker** drawer in the Extensions panel.
+### Automatic Tracking
+The extension automatically:
+- Adds CP on each AI response
+- Detects perks formatted as `**PERK NAME** (100 CP) [FLAGS]`
+- Parses ```forge JSON blocks for state sync
+- Tracks corruption/sanity changes
 
-### Auto-Detection Format
-For perks to auto-detect, ask your AI to format them as:
+### Context Injection
+For Author's Note or World Info:
 ```
-**PERK NAME** (XXX CP) - Description [FLAGS, LIKE, THESE]
+{{getCelestialForgeInjection()}}
+```
+or for JSON format:
+```
+{{getCelestialForgeJSON()}}
 ```
 
-### API
-Access via browser console:
+### Console Commands
 ```javascript
-CelestialForge.addPerk("NAME", 100, "Description", ["TOGGLEABLE"]);
-CelestialForge.addBonusCP(50, "combat victory");
-CelestialForge.triggerManualRoll();
+// Get current state
+window.celestialForge.state
+
+// Add bonus CP
+window.celestialForge.state.bonus_cp += 100;
+window.celestialForge.calculateTotals();
+
+// Reset
+window.celestialForge.resetState();
 ```
 
-## Troubleshooting
+## Perk Flags
 
-**Extension not appearing?**
-- Check browser console (F12) for errors
-- Verify files are at repo root, not in subfolder
-- Restart SillyTavern completely
+- `PASSIVE` - Always active
+- `TOGGLEABLE` - Can be turned on/off
+- `SCALING` - Has levels that increase with use
+- `UNCAPPED` - Special perk that removes scaling limits
+- `CORRUPTING` - Increases corruption when used
+- `SANITY-TAXING` - Erodes sanity when used
 
-## Version History
+## SimTracker Template
 
-- **v3.0.0** - Complete rewrite for modern ST API
-- **v2.0.0** - Feature-complete but API incompatible
-- **v1.0.0** - Initial release
+The extension outputs SimTracker-compatible JSON. Use the included template or create your own with the `stats.perks` array.
+
+## License
+
+MIT
