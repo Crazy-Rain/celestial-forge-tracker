@@ -47,7 +47,9 @@ const defaultChatState = {
     lastUpdated: null,
     // NEW from v9: scaling support
     has_uncapped: false,
-    perk_history: []
+    perk_history: [],
+    // NEW v8.1: GAMER meta-scaling
+    all_perks_scalable: false
 };
 
 // ============================================
@@ -207,6 +209,11 @@ function addPerk(perkData) {
         applyUncappedToAllPerks(state);
     }
     
+    // NEW: Check if this is GAMER/META-SCALING perk!
+    if (perk.flags.includes('GAMER') || perk.flags.includes('META-SCALING')) {
+        applyGamerToAllPerks(state);
+    }
+    
     state.acquiredPerks.push(perk);
     state.spentCP = (state.spentCP || 0) + perk.cost;
     state.perk_history.push({ name: perk.name, timestamp: Date.now() });
@@ -230,6 +237,25 @@ function applyUncappedToAllPerks(state) {
         if (perk.scaling) {
             perk.scaling.maxLevel = Infinity;
             perk.scaling.uncapped = true;
+        }
+    });
+}
+
+function applyGamerToAllPerks(state) {
+    log('🎮 GAMER perk acquired! ALL perks now generate XP!');
+    state.all_perks_scalable = true;
+    
+    // Convert ALL perks (even passive ones) to have scaling
+    state.acquiredPerks.forEach(perk => {
+        if (!perk.scaling) {
+            perk.scaling = {
+                level: 1,
+                maxLevel: state.has_uncapped ? Infinity : 10,
+                xp: 0,
+                xp_needed: 10,
+                uncapped: state.has_uncapped
+            };
+            log(`  📊 ${perk.name} is now scalable!`);
         }
     });
 }
@@ -747,13 +773,55 @@ function createSettingsHtml() {
                 </div>
                 
                 <div class="forge-section" style="margin-top:10px">
-                    <h4>🎯 Actions</h4>
+                    <h4>🎯 Quick Actions</h4>
                     <div style="display:grid;grid-template-columns:1fr auto;gap:5px;margin-bottom:5px">
                         <input type="number" id="forge-bonus-input" placeholder="Bonus CP amount" style="width:100%">
-                        <button id="forge-add-bonus" class="menu_button">Add CP</button>
+                        <button id="forge-add-bonus" class="menu_button">Add Bonus CP</button>
                     </div>
                     <button id="forge-force-process" class="menu_button" style="width:100%;margin-bottom:5px">Force Process Last Message</button>
                     <button id="forge-reset" class="menu_button" style="width:100%">Reset State</button>
+                </div>
+                
+                <div class="forge-section" style="margin-top:10px">
+                    <h4>🔧 Manual Controls</h4>
+                    
+                    <div style="margin-bottom:10px">
+                        <label style="font-size:11px;font-weight:bold">Response Count:</label>
+                        <div style="display:grid;grid-template-columns:1fr auto auto;gap:5px">
+                            <input type="number" id="forge-manual-responses" min="0" style="width:100%">
+                            <button id="forge-set-responses" class="menu_button" style="font-size:10px">Set</button>
+                            <button id="forge-reset-responses" class="menu_button" style="font-size:10px">0</button>
+                        </div>
+                    </div>
+                    
+                    <div style="margin-bottom:10px">
+                        <label style="font-size:11px;font-weight:bold">Total CP Override:</label>
+                        <div style="display:grid;grid-template-columns:1fr auto;gap:5px">
+                            <input type="number" id="forge-manual-total-cp" min="0" placeholder="Set exact total CP" style="width:100%">
+                            <button id="forge-set-total-cp" class="menu_button" style="font-size:10px">Set CP</button>
+                        </div>
+                        <small style="color:#888;font-size:9px">Sets bonus CP to reach this total</small>
+                    </div>
+                    
+                    <div style="margin-bottom:10px">
+                        <label style="font-size:11px;font-weight:bold">Manual Perk Entry:</label>
+                        <input type="text" id="forge-manual-perk-name" placeholder="PERK NAME" style="width:100%;margin-bottom:3px">
+                        <div style="display:grid;grid-template-columns:1fr 1fr auto;gap:5px">
+                            <input type="number" id="forge-manual-perk-cost" placeholder="Cost" min="0" style="width:100%">
+                            <input type="text" id="forge-manual-perk-flags" placeholder="FLAGS" style="width:100%">
+                            <button id="forge-add-manual-perk" class="menu_button" style="font-size:10px">Add</button>
+                        </div>
+                        <small style="color:#888;font-size:9px">Flags: comma-separated (PASSIVE, SCALING, etc)</small>
+                    </div>
+                    
+                    <details style="margin-top:10px">
+                        <summary style="cursor:pointer;font-size:11px;font-weight:bold;padding:5px;background:rgba(255,255,255,0.05);border-radius:3px">⚠️ Advanced Controls</summary>
+                        <div style="margin-top:5px;padding:5px">
+                            <button id="forge-recalc" class="menu_button" style="width:100%;margin-bottom:3px;font-size:10px">Recalculate Totals</button>
+                            <button id="forge-fix-scaling" class="menu_button" style="width:100%;margin-bottom:3px;font-size:10px">Fix Missing Scaling Data</button>
+                            <button id="forge-export" class="menu_button" style="width:100%;margin-bottom:3px;font-size:10px">Export State (Console)</button>
+                        </div>
+                    </details>
                 </div>
                 
                 <div class="forge-section" style="margin-top:10px">
@@ -909,6 +977,111 @@ function bindUIEvents() {
                 updateUI();
                 $('#forge-bonus-input').val('');
             }
+        }
+    });
+    
+    // NEW: Manual response count control
+    $('#forge-set-responses').on('click', function() {
+        const count = parseInt($('#forge-manual-responses').val());
+        if (!isNaN(count) && count >= 0) {
+            const state = getCurrentState();
+            if (state) {
+                state.responseCount = count;
+                log(`📊 Response count set to ${count}`);
+                saveSettings();
+                updateUI();
+            }
+        }
+    });
+    
+    $('#forge-reset-responses').on('click', function() {
+        const state = getCurrentState();
+        if (state && confirm('Reset response count to 0?')) {
+            state.responseCount = 0;
+            log('📊 Response count reset to 0');
+            saveSettings();
+            updateUI();
+            $('#forge-manual-responses').val('');
+        }
+    });
+    
+    // NEW: Manual total CP override
+    $('#forge-set-total-cp').on('click', function() {
+        const targetTotal = parseInt($('#forge-manual-total-cp').val());
+        if (!isNaN(targetTotal) && targetTotal >= 0) {
+            const state = getCurrentState();
+            const settings = getSettings();
+            if (state) {
+                const baseCP = state.responseCount * settings.cpPerResponse;
+                state.bonusCP = targetTotal - baseCP;
+                log(`💰 Total CP set to ${targetTotal} (bonus: ${state.bonusCP})`);
+                saveSettings();
+                updateUI();
+                $('#forge-manual-total-cp').val('');
+            }
+        }
+    });
+    
+    // NEW: Manual perk entry
+    $('#forge-add-manual-perk').on('click', function() {
+        const name = $('#forge-manual-perk-name').val().trim();
+        const cost = parseInt($('#forge-manual-perk-cost').val()) || 0;
+        const flagsStr = $('#forge-manual-perk-flags').val().trim();
+        const flags = flagsStr ? flagsStr.split(',').map(f => f.trim().toUpperCase()).filter(f => f) : [];
+        
+        if (name && cost >= 0) {
+            addPerk({ name, cost, flags, description: 'Manually added' });
+            $('#forge-manual-perk-name').val('');
+            $('#forge-manual-perk-cost').val('');
+            $('#forge-manual-perk-flags').val('');
+        } else {
+            alert('Please enter at least a perk name and cost!');
+        }
+    });
+    
+    // NEW: Recalculate totals
+    $('#forge-recalc').on('click', function() {
+        const state = getCurrentState();
+        if (state) {
+            state.spentCP = state.acquiredPerks.reduce((sum, p) => sum + (p.cost || 0), 0);
+            log('🔄 Recalculated totals');
+            saveSettings();
+            updateUI();
+        }
+    });
+    
+    // NEW: Fix missing scaling data
+    $('#forge-fix-scaling').on('click', function() {
+        const state = getCurrentState();
+        if (state) {
+            let fixed = 0;
+            state.acquiredPerks.forEach(perk => {
+                if (perk.flags.includes('SCALING') && !perk.scaling) {
+                    perk.scaling = {
+                        level: 1,
+                        maxLevel: state.has_uncapped ? Infinity : 10,
+                        xp: 0,
+                        xp_needed: 10,
+                        uncapped: state.has_uncapped
+                    };
+                    fixed++;
+                }
+            });
+            log(`🔧 Fixed ${fixed} perks with missing scaling data`);
+            saveSettings();
+            updateUI();
+            alert(`Fixed ${fixed} perks!`);
+        }
+    });
+    
+    // NEW: Export state to console
+    $('#forge-export').on('click', function() {
+        const state = getCurrentState();
+        if (state) {
+            console.log('=== CELESTIAL FORGE STATE EXPORT ===');
+            console.log(JSON.stringify(state, null, 2));
+            console.log('=== END EXPORT ===');
+            alert('State exported to console! Press F12 to view.');
         }
     });
     
