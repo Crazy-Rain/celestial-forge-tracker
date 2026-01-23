@@ -1,8 +1,15 @@
 // Celestial Forge Tracker v9.1 - SillyTavern Extension
 // Compatible with ST's extension system
 
-import { eventSource, event_types, saveSettingsDebounced } from "/script.js";
-import { extension_settings, getContext } from "/extensions.js";
+const context = SillyTavern.getContext();
+
+const {
+  eventSource,
+  event_types,
+  saveSettingsDebounced,
+} = context;
+
+const { extension_settings } = context;
 
 
 
