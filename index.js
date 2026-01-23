@@ -1,17 +1,7 @@
-// Celestial Forge Tracker v9.1 - SillyTavern Extension
-// Compatible with modern ST extension system
-
-const {
-    extensionSettings,
-    saveSettingsDebounced,
-    eventSource,
-    event_types
-} = SillyTavern.getContext();
+// Celestial Forge Tracker v9.2 - SillyTavern Extension
+// Now with proper UI panel!
 
 const MODULE_NAME = "celestial-forge-tracker";
-
-const extensionFolderPath =
-  new URL('.', import.meta.url).pathname.replace(/\/$/, '');
 
 const defaultSettings = {
     enabled: true,
@@ -22,15 +12,16 @@ const defaultSettings = {
     debug_mode: false
 };
 
-// Live settings reference
+// Will be set after ST loads
+let extensionSettings, saveSettingsDebounced, eventSource, event_types;
 let settings = null;
-
+let tracker = null;
 
 // ==================== CELESTIAL FORGE TRACKER CLASS ====================
 
 class CelestialForgeTracker {
     constructor() {
-        this.extensionVersion = "9.1.0";
+        this.extensionVersion = "9.2.0";
         this.state = this.getDefaultState();
         this.validFlags = [
             'PASSIVE', 'TOGGLEABLE', 'ALWAYS-ON', 
@@ -124,6 +115,7 @@ class CelestialForgeTracker {
             this.calculateTotals();
             this.saveState();
             this.syncToSimTracker();
+            updateUI();
             return { success: true, perk };
         } else {
             this.state.pending_perk = {
@@ -133,6 +125,7 @@ class CelestialForgeTracker {
                 cp_needed: perk.cost - this.state.available_cp
             };
             this.saveState();
+            updateUI();
             return { success: false, reason: 'insufficient_cp', pending: this.state.pending_perk };
         }
     }
@@ -186,6 +179,7 @@ class CelestialForgeTracker {
         
         this.saveState();
         this.syncToSimTracker();
+        updateUI();
         return perk.scaling;
     }
     
@@ -211,6 +205,7 @@ class CelestialForgeTracker {
         
         this.saveState();
         this.syncToSimTracker();
+        updateUI();
         return perk.scaling;
     }
 
@@ -235,6 +230,7 @@ class CelestialForgeTracker {
         
         this.saveState();
         this.syncToSimTracker();
+        updateUI();
         return { success: true, active: perk.active };
     }
 
@@ -326,6 +322,7 @@ class CelestialForgeTracker {
         
         this.saveState();
         this.syncToSimTracker();
+        updateUI();
         return true;
     }
 
@@ -489,6 +486,7 @@ ${perksStr || '(none)'}`;
         this.state = this.getDefaultState();
         this.saveState();
         this.syncToSimTracker();
+        updateUI();
         return this.state;
     }
 
@@ -503,16 +501,201 @@ ${perksStr || '(none)'}`;
     }
 }
 
+// ==================== UI PANEL ====================
+
+function getSettingsHtml() {
+    return `
+    <div id="celestial-forge-settings" class="celestial-forge-panel">
+        <div class="inline-drawer">
+            <div class="inline-drawer-toggle inline-drawer-header">
+                <b>⚒️ Celestial Forge Tracker</b>
+                <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+            </div>
+            <div class="inline-drawer-content">
+                <!-- Status Display -->
+                <div class="cf-status-section">
+                    <div class="cf-stat-row">
+                        <span>Total CP:</span>
+                        <span id="cf-total-cp" class="cf-value">0</span>
+                    </div>
+                    <div class="cf-stat-row">
+                        <span>Available:</span>
+                        <span id="cf-available-cp" class="cf-value">0</span>
+                    </div>
+                    <div class="cf-stat-row">
+                        <span>Perks:</span>
+                        <span id="cf-perk-count" class="cf-value">0</span>
+                    </div>
+                    <div class="cf-stat-row">
+                        <span>Corruption:</span>
+                        <span id="cf-corruption" class="cf-value">0/100</span>
+                    </div>
+                    <div class="cf-stat-row">
+                        <span>Sanity:</span>
+                        <span id="cf-sanity" class="cf-value">0/100</span>
+                    </div>
+                </div>
+                
+                <hr class="sysHR">
+                
+                <!-- Settings -->
+                <div class="cf-settings-section">
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="cf-enabled" />
+                        <span>Enable Tracking</span>
+                    </label>
+                    
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="cf-auto-parse" />
+                        <span>Auto-parse Forge Blocks</span>
+                    </label>
+                    
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="cf-simtracker-sync" />
+                        <span>Sync to SimTracker</span>
+                    </label>
+                    
+                    <label class="checkbox_label">
+                        <input type="checkbox" id="cf-debug" />
+                        <span>Debug Mode</span>
+                    </label>
+                    
+                    <div class="cf-input-row">
+                        <label for="cf-cp-per-response">CP per Response:</label>
+                        <input type="number" id="cf-cp-per-response" min="1" max="100" value="10" />
+                    </div>
+                </div>
+                
+                <hr class="sysHR">
+                
+                <!-- Actions -->
+                <div class="cf-actions">
+                    <input id="cf-bonus-cp-input" type="number" class="text_pole" placeholder="Bonus CP" />
+                    <div class="cf-button-row">
+                        <div id="cf-add-bonus-cp" class="menu_button menu_button_icon">
+                            <i class="fa-solid fa-plus"></i>
+                            <span>Add Bonus CP</span>
+                        </div>
+                        <div id="cf-reset-state" class="menu_button menu_button_icon">
+                            <i class="fa-solid fa-trash"></i>
+                            <span>Reset</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Perk List -->
+                <div id="cf-perk-list" class="cf-perk-list">
+                    <small>No perks acquired yet</small>
+                </div>
+            </div>
+        </div>
+    </div>`;
+}
+
+function updateUI() {
+    if (!tracker) return;
+    
+    const state = tracker.state;
+    
+    // Update stats
+    $('#cf-total-cp').text(state.total_cp);
+    $('#cf-available-cp').text(state.available_cp);
+    $('#cf-perk-count').text(state.acquired_perks.length);
+    $('#cf-corruption').text(`${state.corruption}/100`);
+    $('#cf-sanity').text(`${state.sanity}/100`);
+    
+    // Update perk list
+    const perkList = $('#cf-perk-list');
+    if (state.acquired_perks.length === 0) {
+        perkList.html('<small>No perks acquired yet</small>');
+    } else {
+        const perksHtml = state.acquired_perks.map(p => {
+            let scalingHtml = '';
+            if (p.scaling) {
+                const maxStr = p.scaling.uncapped ? '∞' : p.scaling.maxLevel;
+                scalingHtml = `<div class="cf-perk-scaling">Lv.${p.scaling.level}/${maxStr}</div>`;
+            }
+            const activeClass = p.toggleable && !p.active ? 'cf-inactive' : '';
+            return `
+                <div class="cf-perk-item ${activeClass}">
+                    <div class="cf-perk-name">${p.name}</div>
+                    <div class="cf-perk-cost">${p.cost} CP</div>
+                    ${scalingHtml}
+                </div>`;
+        }).join('');
+        perkList.html(perksHtml);
+    }
+}
+
+function bindUIEvents() {
+    // Settings checkboxes
+    $('#cf-enabled').on('change', function() {
+        settings.enabled = $(this).prop('checked');
+        saveSettingsDebounced();
+    });
+    
+    $('#cf-auto-parse').on('change', function() {
+        settings.auto_parse_forge_blocks = $(this).prop('checked');
+        saveSettingsDebounced();
+    });
+    
+    $('#cf-simtracker-sync').on('change', function() {
+        settings.sync_to_simtracker = $(this).prop('checked');
+        saveSettingsDebounced();
+    });
+    
+    $('#cf-debug').on('change', function() {
+        settings.debug_mode = $(this).prop('checked');
+        saveSettingsDebounced();
+    });
+    
+    $('#cf-cp-per-response').on('change', function() {
+        settings.cp_per_response = parseInt($(this).val()) || 10;
+        saveSettingsDebounced();
+    });
+    
+    // Actions
+    $('#cf-add-bonus-cp').on('click', function() {
+        const bonus = parseInt($('#cf-bonus-cp-input').val()) || 0;
+        if (bonus > 0 && tracker) {
+            tracker.state.bonus_cp += bonus;
+            tracker.calculateTotals();
+            tracker.saveState();
+            tracker.syncToSimTracker();
+            updateUI();
+            $('#cf-bonus-cp-input').val('');
+        }
+    });
+    
+    $('#cf-reset-state').on('click', function() {
+        if (confirm('Reset all Celestial Forge progress? This cannot be undone!')) {
+            tracker?.resetState();
+        }
+    });
+}
+
+function loadSettingsUI() {
+    $('#cf-enabled').prop('checked', settings.enabled);
+    $('#cf-auto-parse').prop('checked', settings.auto_parse_forge_blocks);
+    $('#cf-simtracker-sync').prop('checked', settings.sync_to_simtracker);
+    $('#cf-debug').prop('checked', settings.debug_mode);
+    $('#cf-cp-per-response').val(settings.cp_per_response);
+}
+
 // ==================== SILLYTAVERN INIT ====================
 
-let tracker = null;
-
 function loadSettings() {
+    const context = SillyTavern.getContext();
+    extensionSettings = context.extensionSettings;
+    saveSettingsDebounced = context.saveSettingsDebounced;
+    eventSource = context.eventSource;
+    event_types = context.event_types;
+    
     if (!extensionSettings[MODULE_NAME]) {
-        extensionSettings[MODULE_NAME] = structuredClone(defaultSettings);
+        extensionSettings[MODULE_NAME] = Object.assign({}, defaultSettings);
         saveSettingsDebounced();
     }
-
+    
     settings = extensionSettings[MODULE_NAME];
     return settings;
 }
@@ -520,19 +703,35 @@ function loadSettings() {
 function onMessageReceived(data) {
     if (!tracker) return;
     const text = typeof data === 'string' ? data : (data?.message || data?.mes || '');
-    if (text) tracker.processAIResponse(text);
+    if (text) {
+        tracker.processAIResponse(text);
+        updateUI();
+    }
 }
 
 function onChatChanged() {
-    if (tracker) tracker.loadState();
+    if (tracker) {
+        tracker.loadState();
+        updateUI();
+    }
 }
 
 // Initialize on jQuery ready
 jQuery(async () => {
     loadSettings();
     
-    tracker = new CelestialForgeTracker(settings);
+    // Add UI to extensions panel
+    const settingsHtml = getSettingsHtml();
+    $('#extensions_settings').append(settingsHtml);
+    
+    // Create tracker instance
+    tracker = new CelestialForgeTracker();
     tracker.loadState();
+    
+    // Bind events and load UI state
+    bindUIEvents();
+    loadSettingsUI();
+    updateUI();
     
     // Expose globally
     window.celestialForge = tracker;
@@ -544,7 +743,7 @@ jQuery(async () => {
     eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
     eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
     
-    console.log('[Celestial Forge Tracker v9.1] Ready!', tracker.getStatus());
+    console.log('[Celestial Forge Tracker v9.2] Ready!', tracker.getStatus());
 });
 
 export { CelestialForgeTracker };
