@@ -1,5 +1,4 @@
-// Celestial Forge Tracker v9.2 - SillyTavern Extension
-// Now with proper UI panel!
+// Celestial Forge Tracker v9.3 - COMPLETE UI with all features!
 
 const MODULE_NAME = "celestial-forge-tracker";
 
@@ -12,7 +11,6 @@ const defaultSettings = {
     debug_mode: false
 };
 
-// Will be set after ST loads
 let extensionSettings, saveSettingsDebounced, eventSource, event_types;
 let settings = null;
 let tracker = null;
@@ -21,7 +19,7 @@ let tracker = null;
 
 class CelestialForgeTracker {
     constructor() {
-        this.extensionVersion = "9.2.0";
+        this.extensionVersion = "9.3.0";
         this.state = this.getDefaultState();
         this.validFlags = [
             'PASSIVE', 'TOGGLEABLE', 'ALWAYS-ON', 
@@ -58,8 +56,6 @@ class CelestialForgeTracker {
         return settings || defaultSettings;
     }
 
-    // ==================== STATE MANAGEMENT ====================
-    
     calculateTotals() {
         this.state.total_cp = this.state.base_cp + this.state.bonus_cp;
         this.state.spent_cp = this.state.acquired_perks.reduce((sum, p) => sum + (p.cost || 0), 0);
@@ -74,8 +70,6 @@ class CelestialForgeTracker {
         this.saveState();
         return this.state;
     }
-
-    // ==================== PERK MANAGEMENT ====================
 
     addPerk(perkData) {
         if (perkData.name?.toUpperCase().includes('UNCAPPED') || 
@@ -234,8 +228,6 @@ class CelestialForgeTracker {
         return { success: true, active: perk.active };
     }
 
-    // ==================== FORGE BLOCK PARSING ====================
-    
     parseForgeBlock(text) {
         const forgeMatch = text.match(/```forge\s*([\s\S]*?)```/);
         if (!forgeMatch) return null;
@@ -326,8 +318,6 @@ class CelestialForgeTracker {
         return true;
     }
 
-    // ==================== SIMTRACKER ====================
-    
     generateSimTrackerJSON() {
         return {
             characters: [{
@@ -383,8 +373,6 @@ class CelestialForgeTracker {
         }
     }
 
-    // ==================== CONTEXT INJECTION ====================
-    
     generateContextBlock() {
         const perksStr = this.state.acquired_perks.map(p => {
             let str = `- ${p.name} (${p.cost} CP) [${p.flags.join(', ')}]`;
@@ -405,21 +393,17 @@ ${perksStr || '(none)'}`;
         return `\`\`\`forge\n${JSON.stringify(this.generateSimTrackerJSON(), null, 2)}\n\`\`\``;
     }
 
-    // ==================== AI RESPONSE PROCESSING ====================
-
     processAIResponse(text) {
         if (!this.getSettings().enabled) return null;
         
         const actions = [];
         
-        // Parse forge block
         const forgeBlock = this.parseForgeBlock(text);
         if (forgeBlock && this.getSettings().auto_parse_forge_blocks) {
             this.syncFromForgeBlock(forgeBlock);
             actions.push({ type: 'forge_sync' });
         }
         
-        // Parse narrative perks
         const perkMatches = text.matchAll(/\*\*([A-Z][A-Z\s]+?)\*\*\s*\((\d+)\s*CP\).*?\[([^\]]*)\]/gi);
         for (const match of perkMatches) {
             const exists = this.state.acquired_perks.some(p => 
@@ -435,7 +419,6 @@ ${perksStr || '(none)'}`;
             }
         }
         
-        // Parse corruption/sanity
         const corruptionMatch = text.match(/corruption[:\s]+([+-]?\d+)/i);
         if (corruptionMatch) {
             this.state.corruption = Math.min(100, Math.max(0, this.state.corruption + parseInt(corruptionMatch[1])));
@@ -454,8 +437,6 @@ ${perksStr || '(none)'}`;
         
         return actions;
     }
-
-    // ==================== PERSISTENCE ====================
 
     saveState() {
         try {
@@ -501,7 +482,7 @@ ${perksStr || '(none)'}`;
     }
 }
 
-// ==================== UI PANEL ====================
+// ==================== ENHANCED UI ====================
 
 function getSettingsHtml() {
     return `
@@ -512,7 +493,7 @@ function getSettingsHtml() {
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
-                <!-- Status Display -->
+                <!-- CP Overview with Progress -->
                 <div class="cf-status-section">
                     <div class="cf-stat-row">
                         <span>Total CP:</span>
@@ -523,18 +504,50 @@ function getSettingsHtml() {
                         <span id="cf-available-cp" class="cf-value">0</span>
                     </div>
                     <div class="cf-stat-row">
+                        <span>Spent:</span>
+                        <span id="cf-spent-cp" class="cf-value">0</span>
+                    </div>
+                    <div class="cf-stat-row">
                         <span>Perks:</span>
                         <span id="cf-perk-count" class="cf-value">0</span>
                     </div>
-                    <div class="cf-stat-row">
-                        <span>Corruption:</span>
-                        <span id="cf-corruption" class="cf-value">0/100</span>
+                    
+                    <!-- Threshold Progress -->
+                    <div style="margin-top: 8px;">
+                        <div style="display: flex; justify-content: space-between; font-size: 11px; color: #ffd700; margin-bottom: 2px;">
+                            <span>Next Threshold</span>
+                            <span id="cf-threshold-text">0/100</span>
+                        </div>
+                        <div class="cf-progress-bar">
+                            <div id="cf-threshold-bar" class="cf-progress-fill cp" style="width: 0%"></div>
+                        </div>
                     </div>
-                    <div class="cf-stat-row">
-                        <span>Sanity:</span>
-                        <span id="cf-sanity" class="cf-value">0/100</span>
+                    
+                    <!-- Corruption -->
+                    <div style="margin-top: 8px;">
+                        <div style="display: flex; justify-content: space-between; font-size: 11px; color: #9b59b6; margin-bottom: 2px;">
+                            <span>Corruption</span>
+                            <span id="cf-corruption-text">0/100</span>
+                        </div>
+                        <div class="cf-progress-bar">
+                            <div id="cf-corruption-bar" class="cf-progress-fill corruption" style="width: 0%"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Sanity -->
+                    <div style="margin-top: 8px;">
+                        <div style="display: flex; justify-content: space-between; font-size: 11px; color: #3498db; margin-bottom: 2px;">
+                            <span>Sanity</span>
+                            <span id="cf-sanity-text">0/100</span>
+                        </div>
+                        <div class="cf-progress-bar">
+                            <div id="cf-sanity-bar" class="cf-progress-fill sanity" style="width: 0%"></div>
+                        </div>
                     </div>
                 </div>
+                
+                <!-- Pending Perk -->
+                <div id="cf-pending-container" style="display: none;"></div>
                 
                 <hr class="sysHR">
                 
@@ -583,7 +596,7 @@ function getSettingsHtml() {
                     </div>
                 </div>
                 
-                <!-- Perk List -->
+                <!-- Acquired Perks List -->
                 <div id="cf-perk-list" class="cf-perk-list">
                     <small>No perks acquired yet</small>
                 </div>
@@ -597,38 +610,111 @@ function updateUI() {
     
     const state = tracker.state;
     
-    // Update stats
+    // Update CP stats
     $('#cf-total-cp').text(state.total_cp);
     $('#cf-available-cp').text(state.available_cp);
+    $('#cf-spent-cp').text(state.spent_cp);
     $('#cf-perk-count').text(state.acquired_perks.length);
-    $('#cf-corruption').text(`${state.corruption}/100`);
-    $('#cf-sanity').text(`${state.sanity}/100`);
     
-    // Update perk list
+    // Update threshold progress bar
+    const thresholdPercent = Math.round((state.threshold_progress / state.threshold) * 100);
+    $('#cf-threshold-text').text(`${state.threshold_progress}/${state.threshold}`);
+    $('#cf-threshold-bar').css('width', `${thresholdPercent}%`);
+    
+    // Update corruption bar
+    $('#cf-corruption-text').text(`${state.corruption}/100`);
+    $('#cf-corruption-bar').css('width', `${state.corruption}%`);
+    
+    // Update sanity bar
+    $('#cf-sanity-text').text(`${state.sanity}/100`);
+    $('#cf-sanity-bar').css('width', `${state.sanity}%`);
+    
+    // Update pending perk display
+    const pendingContainer = $('#cf-pending-container');
+    if (state.pending_perk) {
+        const pendingHtml = `
+            <div class="cf-pending">
+                <div class="cf-pending-title">⏳ Pending Perk</div>
+                <div class="cf-pending-name">${state.pending_perk.name}</div>
+                <div style="font-size: 11px; color: #f1c40f; margin-top: 4px;">
+                    Cost: ${state.pending_perk.cost} CP | Need ${state.pending_perk.cp_needed} more CP
+                </div>
+            </div>`;
+        pendingContainer.html(pendingHtml).show();
+    } else {
+        pendingContainer.hide();
+    }
+    
+    // Update perk list with FULL details
     const perkList = $('#cf-perk-list');
     if (state.acquired_perks.length === 0) {
         perkList.html('<small>No perks acquired yet</small>');
     } else {
-        const perksHtml = state.acquired_perks.map(p => {
+        const perksHtml = state.acquired_perks.map((p, idx) => {
+            // Build flag badges
+            const flagsHtml = p.flags.map(flag => {
+                const flagClass = flag.toLowerCase().replace(/-/g, '');
+                return `<span class="cf-perk-flag ${flagClass}">${flag}</span>`;
+            }).join('');
+            
+            // Build scaling display
             let scalingHtml = '';
             if (p.scaling) {
                 const maxStr = p.scaling.uncapped ? '∞' : p.scaling.maxLevel;
-                scalingHtml = `<div class="cf-perk-scaling">Lv.${p.scaling.level}/${maxStr}</div>`;
+                const uncappedClass = p.scaling.uncapped ? 'uncapped' : '';
+                const xpPercent = p.scaling.xp_percent || 0;
+                scalingHtml = `
+                    <div class="cf-scaling-bar">
+                        <div class="cf-scaling-label ${uncappedClass}">Lv.${p.scaling.level}/${maxStr}</div>
+                        <div class="cf-scaling-progress">
+                            <div class="cf-scaling-fill ${uncappedClass}" style="width: ${xpPercent}%"></div>
+                        </div>
+                        <div style="font-size: 10px; color: #2ecc71; min-width: 60px; text-align: right;">
+                            ${p.scaling.xp}/${p.scaling.level * 10} XP
+                        </div>
+                    </div>`;
             }
+            
+            // Build toggle button
+            let toggleHtml = '';
+            if (p.toggleable) {
+                const toggleClass = p.active ? 'fa-toggle-on' : 'fa-toggle-off';
+                const toggleColor = p.active ? '#2ecc71' : '#666';
+                toggleHtml = `
+                    <div class="cf-perk-toggle" data-perk="${p.name}" style="cursor: pointer; color: ${toggleColor}; font-size: 16px;">
+                        <i class="fa-solid ${toggleClass}"></i>
+                    </div>`;
+            }
+            
             const activeClass = p.toggleable && !p.active ? 'cf-inactive' : '';
+            const descHtml = p.description ? `<div style="font-size: 10px; color: #999; margin-top: 4px; font-style: italic;">${p.description}</div>` : '';
+            
             return `
-                <div class="cf-perk-item ${activeClass}">
-                    <div class="cf-perk-name">${p.name}</div>
-                    <div class="cf-perk-cost">${p.cost} CP</div>
+                <div class="cf-perk-item ${activeClass}" data-perk-idx="${idx}">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div class="cf-perk-name">${p.name}</div>
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <div class="cf-perk-cost">${p.cost} CP</div>
+                            ${toggleHtml}
+                        </div>
+                    </div>
+                    ${descHtml}
+                    <div class="cf-perk-flags">${flagsHtml}</div>
                     ${scalingHtml}
                 </div>`;
         }).join('');
         perkList.html(perksHtml);
+        
+        // Bind toggle clicks
+        $('.cf-perk-toggle').off('click').on('click', function(e) {
+            e.stopPropagation();
+            const perkName = $(this).data('perk');
+            tracker.togglePerk(perkName);
+        });
     }
 }
 
 function bindUIEvents() {
-    // Settings checkboxes
     $('#cf-enabled').on('change', function() {
         settings.enabled = $(this).prop('checked');
         saveSettingsDebounced();
@@ -654,7 +740,6 @@ function bindUIEvents() {
         saveSettingsDebounced();
     });
     
-    // Actions
     $('#cf-add-bonus-cp').on('click', function() {
         const bonus = parseInt($('#cf-bonus-cp-input').val()) || 0;
         if (bonus > 0 && tracker) {
@@ -716,34 +801,28 @@ function onChatChanged() {
     }
 }
 
-// Initialize on jQuery ready
 jQuery(async () => {
     loadSettings();
     
-    // Add UI to extensions panel
     const settingsHtml = getSettingsHtml();
     $('#extensions_settings').append(settingsHtml);
     
-    // Create tracker instance
     tracker = new CelestialForgeTracker();
     tracker.loadState();
     
-    // Bind events and load UI state
     bindUIEvents();
     loadSettingsUI();
     updateUI();
     
-    // Expose globally
     window.celestialForge = tracker;
     window.CelestialForgeTracker = CelestialForgeTracker;
     window.getCelestialForgeInjection = () => tracker?.generateContextBlock() || '';
     window.getCelestialForgeJSON = () => tracker?.generateForgeBlockInjection() || '';
     
-    // Register ST events
     eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
     eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
     
-    console.log('[Celestial Forge Tracker v9.2] Ready!', tracker.getStatus());
+    console.log('[Celestial Forge Tracker v9.3] Ready with FULL UI!', tracker.getStatus());
 });
 
 export { CelestialForgeTracker };
