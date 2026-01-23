@@ -64,7 +64,7 @@ class CelestialForgeTracker {
     }
 
     getSettings() {
-        return extension_settings[extensionName] || defaultSettings;
+        return settings || defaultSettings;
     }
 
     // ==================== STATE MANAGEMENT ====================
