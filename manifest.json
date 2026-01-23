@@ -1,12 +1,12 @@
 {
-    "display_name": "Celestial Forge Tracker",
+    "display_name": "Celestial Forge Tracker v8.0",
     "loading_order": 10,
     "requires": [],
     "optional": [],
     "js": "index.js",
     "css": "style.css",
-    "author": "Claude & LO",
-    "version": "9.2.0",
+    "author": "LO & ENI",
+    "version": "8.0.0",
     "homePage": "https://github.com/Crazy-Rain/celestial-forge-tracker",
-    "auto_update": true
+    "auto_update": false
 }
