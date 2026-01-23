@@ -676,7 +676,7 @@ function generateSimTrackerJSON() {
     
     const jsonData = {
         characters: [{
-            characterName: context.character.name",
+            characterName: context.character.name,
             currentDateTime: new Date().toLocaleString(),
             stats: {
                 total_cp: totalCP,
