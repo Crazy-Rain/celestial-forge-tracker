@@ -462,7 +462,7 @@ ${perksStr || '(none)'}`;
 
     saveState() {
         try {
-            const context = getContext();
+            const context = SillyTavern.getContext();
             const key = context?.chatId ? `celestialForge_${context.chatId}` : 'celestialForge_global';
             localStorage.setItem(key, JSON.stringify(this.state));
         } catch (e) {
@@ -472,7 +472,7 @@ ${perksStr || '(none)'}`;
 
     loadState() {
         try {
-            const context = getContext();
+            const context = SillyTavern.getContext();
             let saved = context?.chatId ? localStorage.getItem(`celestialForge_${context.chatId}`) : null;
             if (!saved) saved = localStorage.getItem('celestialForge_global');
             if (saved) {
