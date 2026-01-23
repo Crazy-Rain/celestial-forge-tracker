@@ -2,19 +2,12 @@
 // Compatible with ST's extension system
 
 const context = SillyTavern.getContext();
-
-const {
-  eventSource,
-  event_types,
-  saveSettingsDebounced,
-} = context;
-
-const { extension_settings } = context;
-
-
+context.extensionSettings
 
 const extensionName = "celestial-forge-tracker";
-const extensionFolderPath = `scripts/extensions/third_party/${extensionName}`;
+const extensionFolderPath =
+  new URL('.', import.meta.url).pathname.replace(/\/$/, '');
+
 
 const defaultSettings = {
     enabled: true,
