@@ -1,4 +1,4 @@
-// Celestial Forge Tracker v9.3 - COMPLETE UI with all features!
+// Celestial Forge Tracker v9.4 - FIXED with Multi-Event + MutationObserver!
 
 const MODULE_NAME = "celestial-forge-tracker";
 
@@ -8,18 +8,20 @@ const defaultSettings = {
     threshold_base: 100,
     auto_parse_forge_blocks: true,
     sync_to_simtracker: true,
-    debug_mode: false
+    debug_mode: true // ENABLED BY DEFAULT for debugging
 };
 
 let extensionSettings, saveSettingsDebounced, eventSource, event_types;
 let settings = null;
 let tracker = null;
+let lastProcessedMessage = null; // Prevent duplicate processing
+let messageObserver = null;
 
 // ==================== CELESTIAL FORGE TRACKER CLASS ====================
 
 class CelestialForgeTracker {
     constructor() {
-        this.extensionVersion = "9.3.0";
+        this.extensionVersion = "9.4.0";
         this.state = this.getDefaultState();
         this.validFlags = [
             'PASSIVE', 'TOGGLEABLE', 'ALWAYS-ON', 
@@ -110,6 +112,11 @@ class CelestialForgeTracker {
             this.saveState();
             this.syncToSimTracker();
             updateUI();
+            
+            if (this.getSettings().debug_mode) {
+                console.log(`[CF] ✅ Perk acquired: ${perk.name} (${perk.cost} CP)`);
+            }
+            
             return { success: true, perk };
         } else {
             this.state.pending_perk = {
@@ -120,6 +127,11 @@ class CelestialForgeTracker {
             };
             this.saveState();
             updateUI();
+            
+            if (this.getSettings().debug_mode) {
+                console.log(`[CF] ⏳ Perk pending: ${perk.name} (need ${this.state.pending_perk.cp_needed} more CP)`);
+            }
+            
             return { success: false, reason: 'insufficient_cp', pending: this.state.pending_perk };
         }
     }
@@ -156,7 +168,7 @@ class CelestialForgeTracker {
             }
         }
         this.saveState();
-        console.log('[Celestial Forge] UNCAPPED acquired!');
+        console.log('[Celestial Forge] ⚡ UNCAPPED acquired! All scaling perks unlimited!');
     }
     
     updateScaling(perkName, newLevel, newXp = null) {
@@ -398,12 +410,17 @@ ${perksStr || '(none)'}`;
         
         const actions = [];
         
+        // Parse forge blocks
         const forgeBlock = this.parseForgeBlock(text);
         if (forgeBlock && this.getSettings().auto_parse_forge_blocks) {
             this.syncFromForgeBlock(forgeBlock);
             actions.push({ type: 'forge_sync' });
+            if (this.getSettings().debug_mode) {
+                console.log('[CF] 📦 Forge block parsed and synced');
+            }
         }
         
+        // Parse inline perks: **PERK NAME** (100 CP) [FLAGS]
         const perkMatches = text.matchAll(/\*\*([A-Z][A-Z\s]+?)\*\*\s*\((\d+)\s*CP\).*?\[([^\]]*)\]/gi);
         for (const match of perkMatches) {
             const exists = this.state.acquired_perks.some(p => 
@@ -419,20 +436,25 @@ ${perksStr || '(none)'}`;
             }
         }
         
+        // Parse corruption changes
         const corruptionMatch = text.match(/corruption[:\s]+([+-]?\d+)/i);
         if (corruptionMatch) {
             this.state.corruption = Math.min(100, Math.max(0, this.state.corruption + parseInt(corruptionMatch[1])));
+            actions.push({ type: 'corruption_change', value: parseInt(corruptionMatch[1]) });
         }
         
+        // Parse sanity changes
         const sanityMatch = text.match(/sanity[:\s]+([+-]?\d+)/i);
         if (sanityMatch) {
             this.state.sanity = Math.min(100, Math.max(0, this.state.sanity + parseInt(sanityMatch[1])));
+            actions.push({ type: 'sanity_change', value: parseInt(sanityMatch[1]) });
         }
         
+        // Increment response count and CP
         this.incrementResponse();
         
-        if (this.getSettings().debug_mode) {
-            console.log('[Celestial Forge] Processed:', actions);
+        if (this.getSettings().debug_mode && actions.length > 0) {
+            console.log('[CF] 🎯 Processed AI response:', actions);
         }
         
         return actions;
@@ -489,7 +511,7 @@ function getSettingsHtml() {
     <div id="celestial-forge-settings" class="celestial-forge-panel">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>⚒️ Celestial Forge Tracker</b>
+                <b>⚒️ Celestial Forge Tracker v9.4</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
@@ -500,22 +522,22 @@ function getSettingsHtml() {
                         <span id="cf-total-cp" class="cf-value">0</span>
                     </div>
                     <div class="cf-stat-row">
-                        <span>Available:</span>
+                        <span>Available CP:</span>
                         <span id="cf-available-cp" class="cf-value">0</span>
                     </div>
                     <div class="cf-stat-row">
-                        <span>Spent:</span>
+                        <span>Spent CP:</span>
                         <span id="cf-spent-cp" class="cf-value">0</span>
                     </div>
                     <div class="cf-stat-row">
-                        <span>Perks:</span>
+                        <span>Perks Acquired:</span>
                         <span id="cf-perk-count" class="cf-value">0</span>
                     </div>
                     
                     <!-- Threshold Progress -->
-                    <div style="margin-top: 8px;">
-                        <div style="display: flex; justify-content: space-between; font-size: 11px; color: #ffd700; margin-bottom: 2px;">
-                            <span>Next Threshold</span>
+                    <div style="margin-top: 10px;">
+                        <div style="display: flex; justify-content: space-between; font-size: 11px; color: #aaa; margin-bottom: 4px;">
+                            <span>Next Threshold:</span>
                             <span id="cf-threshold-text">0/100</span>
                         </div>
                         <div class="cf-progress-bar">
@@ -525,8 +547,8 @@ function getSettingsHtml() {
                     
                     <!-- Corruption -->
                     <div style="margin-top: 8px;">
-                        <div style="display: flex; justify-content: space-between; font-size: 11px; color: #9b59b6; margin-bottom: 2px;">
-                            <span>Corruption</span>
+                        <div style="display: flex; justify-content: space-between; font-size: 11px; color: #aaa; margin-bottom: 4px;">
+                            <span>Corruption:</span>
                             <span id="cf-corruption-text">0/100</span>
                         </div>
                         <div class="cf-progress-bar">
@@ -536,8 +558,8 @@ function getSettingsHtml() {
                     
                     <!-- Sanity -->
                     <div style="margin-top: 8px;">
-                        <div style="display: flex; justify-content: space-between; font-size: 11px; color: #3498db; margin-bottom: 2px;">
-                            <span>Sanity</span>
+                        <div style="display: flex; justify-content: space-between; font-size: 11px; color: #aaa; margin-bottom: 4px;">
+                            <span>Sanity:</span>
                             <span id="cf-sanity-text">0/100</span>
                         </div>
                         <div class="cf-progress-bar">
@@ -549,56 +571,46 @@ function getSettingsHtml() {
                 <!-- Pending Perk -->
                 <div id="cf-pending-container" style="display: none;"></div>
                 
-                <hr class="sysHR">
-                
-                <!-- Settings -->
+                <!-- Settings Section -->
                 <div class="cf-settings-section">
-                    <label class="checkbox_label">
+                    <label class="checkbox_label" for="cf-enabled">
                         <input type="checkbox" id="cf-enabled" />
                         <span>Enable Tracking</span>
                     </label>
-                    
-                    <label class="checkbox_label">
+                    <label class="checkbox_label" for="cf-auto-parse">
                         <input type="checkbox" id="cf-auto-parse" />
-                        <span>Auto-parse Forge Blocks</span>
+                        <span>Auto-parse ```forge blocks</span>
                     </label>
-                    
-                    <label class="checkbox_label">
+                    <label class="checkbox_label" for="cf-simtracker-sync">
                         <input type="checkbox" id="cf-simtracker-sync" />
                         <span>Sync to SimTracker</span>
                     </label>
-                    
-                    <label class="checkbox_label">
+                    <label class="checkbox_label" for="cf-debug">
                         <input type="checkbox" id="cf-debug" />
-                        <span>Debug Mode</span>
+                        <span>Debug Mode (Console Logging)</span>
                     </label>
                     
                     <div class="cf-input-row">
-                        <label for="cf-cp-per-response">CP per Response:</label>
-                        <input type="number" id="cf-cp-per-response" min="1" max="100" value="10" />
+                        <label>CP per Response:</label>
+                        <input type="number" id="cf-cp-per-response" min="1" max="1000" value="10" />
                     </div>
                 </div>
-                
-                <hr class="sysHR">
                 
                 <!-- Actions -->
                 <div class="cf-actions">
-                    <input id="cf-bonus-cp-input" type="number" class="text_pole" placeholder="Bonus CP" />
+                    <input type="number" id="cf-bonus-cp-input" placeholder="Bonus CP amount" style="margin-bottom: 8px;" />
                     <div class="cf-button-row">
-                        <div id="cf-add-bonus-cp" class="menu_button menu_button_icon">
-                            <i class="fa-solid fa-plus"></i>
-                            <span>Add Bonus CP</span>
-                        </div>
-                        <div id="cf-reset-state" class="menu_button menu_button_icon">
-                            <i class="fa-solid fa-trash"></i>
-                            <span>Reset</span>
-                        </div>
+                        <input type="button" class="menu_button" id="cf-add-bonus-cp" value="➕ Add Bonus CP" />
+                        <input type="button" class="menu_button" id="cf-reset-state" value="🔄 Reset State" />
                     </div>
                 </div>
                 
-                <!-- Acquired Perks List -->
-                <div id="cf-perk-list" class="cf-perk-list">
-                    <small>No perks acquired yet</small>
+                <!-- Perk List -->
+                <div style="margin-top: 10px;">
+                    <div style="font-weight: bold; color: #e94560; margin-bottom: 6px;">📜 Acquired Perks:</div>
+                    <div id="cf-perk-list" class="cf-perk-list">
+                        <small>No perks acquired yet</small>
+                    </div>
                 </div>
             </div>
         </div>
@@ -767,6 +779,95 @@ function loadSettingsUI() {
     $('#cf-cp-per-response').val(settings.cp_per_response);
 }
 
+// ==================== MESSAGE DETECTION (MULTI-METHOD) ====================
+
+function onMessageReceived(data) {
+    if (!tracker || !settings?.enabled) return;
+    
+    // Extract message text from various possible formats
+    const text = typeof data === 'string' ? data : 
+                 (data?.message || data?.mes || data?.content || '');
+    
+    if (!text) return;
+    
+    // Prevent duplicate processing
+    const messageHash = text.substring(0, 100); // First 100 chars as fingerprint
+    if (messageHash === lastProcessedMessage) {
+        if (settings.debug_mode) {
+            console.log('[CF] 🔄 Skipping duplicate message');
+        }
+        return;
+    }
+    
+    lastProcessedMessage = messageHash;
+    
+    if (settings.debug_mode) {
+        console.log('[CF] 📨 Processing new message:', text.substring(0, 50) + '...');
+    }
+    
+    tracker.processAIResponse(text);
+    updateUI();
+}
+
+function onChatChanged() {
+    if (tracker) {
+        tracker.loadState();
+        updateUI();
+        lastProcessedMessage = null; // Reset on chat change
+        if (settings?.debug_mode) {
+            console.log('[CF] 💬 Chat changed, state reloaded');
+        }
+    }
+}
+
+// ==================== MUTATION OBSERVER (BACKUP METHOD) ====================
+
+function setupMutationObserver() {
+    // Find the chat container
+    const chatContainer = document.getElementById('chat');
+    
+    if (!chatContainer) {
+        console.warn('[CF] Chat container not found, mutation observer disabled');
+        return;
+    }
+    
+    if (messageObserver) {
+        messageObserver.disconnect();
+    }
+    
+    messageObserver = new MutationObserver((mutations) => {
+        if (!tracker || !settings?.enabled) return;
+        
+        for (const mutation of mutations) {
+            for (const node of mutation.addedNodes) {
+                if (node.nodeType === 1 && node.classList?.contains('mes')) {
+                    // Check if it's an AI message (not user)
+                    const isAI = !node.classList.contains('is_user');
+                    
+                    if (isAI) {
+                        const messageText = node.querySelector('.mes_text')?.textContent || '';
+                        
+                        if (messageText && settings.debug_mode) {
+                            console.log('[CF] 🔍 MutationObserver detected AI message');
+                        }
+                        
+                        if (messageText) {
+                            onMessageReceived(messageText);
+                        }
+                    }
+                }
+            }
+        }
+    });
+    
+    messageObserver.observe(chatContainer, {
+        childList: true,
+        subtree: true
+    });
+    
+    console.log('[CF] 👁️ MutationObserver active on chat container');
+}
+
 // ==================== SILLYTAVERN INIT ====================
 
 function loadSettings() {
@@ -785,23 +886,45 @@ function loadSettings() {
     return settings;
 }
 
-function onMessageReceived(data) {
-    if (!tracker) return;
-    const text = typeof data === 'string' ? data : (data?.message || data?.mes || '');
-    if (text) {
-        tracker.processAIResponse(text);
-        updateUI();
+function setupEventListeners() {
+    if (!eventSource || !event_types) {
+        console.error('[CF] Event system not available!');
+        return;
     }
-}
-
-function onChatChanged() {
-    if (tracker) {
-        tracker.loadState();
-        updateUI();
+    
+    // Try ALL possible event types
+    const eventsToTry = [
+        'MESSAGE_RECEIVED',
+        'CHARACTER_MESSAGE_RENDERED',
+        'MESSAGE_RENDERED',
+        'CHAT_MESSAGE_RECEIVED',
+        'CHAT_CHANGED'
+    ];
+    
+    let boundEvents = 0;
+    
+    for (const eventName of eventsToTry) {
+        if (event_types[eventName]) {
+            if (eventName === 'CHAT_CHANGED') {
+                eventSource.on(event_types[eventName], onChatChanged);
+            } else {
+                eventSource.on(event_types[eventName], onMessageReceived);
+            }
+            boundEvents++;
+            console.log(`[CF] ✅ Bound to event: ${eventName}`);
+        }
+    }
+    
+    if (boundEvents === 0) {
+        console.warn('[CF] ⚠️ No events bound! Available events:', Object.keys(event_types));
+    } else {
+        console.log(`[CF] 🎯 Bound to ${boundEvents} event types`);
     }
 }
 
 jQuery(async () => {
+    console.log('[CF] 🚀 Initializing Celestial Forge Tracker v9.4...');
+    
     loadSettings();
     
     const settingsHtml = getSettingsHtml();
@@ -814,15 +937,20 @@ jQuery(async () => {
     loadSettingsUI();
     updateUI();
     
+    // Expose to global scope
     window.celestialForge = tracker;
     window.CelestialForgeTracker = CelestialForgeTracker;
     window.getCelestialForgeInjection = () => tracker?.generateContextBlock() || '';
     window.getCelestialForgeJSON = () => tracker?.generateForgeBlockInjection() || '';
     
-    eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
-    eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
+    // Setup ALL event listeners
+    setupEventListeners();
     
-    console.log('[Celestial Forge Tracker v9.3] Ready with FULL UI!', tracker.getStatus());
+    // Setup MutationObserver as backup
+    setTimeout(() => setupMutationObserver(), 1000); // Delay to ensure DOM is ready
+    
+    console.log('[CF] ✨ Ready! Status:', tracker.getStatus());
+    console.log('[CF] 📋 Debug mode:', settings.debug_mode ? 'ENABLED' : 'DISABLED');
 });
 
 export { CelestialForgeTracker };
