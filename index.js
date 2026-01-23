@@ -1,13 +1,17 @@
 // Celestial Forge Tracker v9.1 - SillyTavern Extension
-// Compatible with ST's extension system
+// Compatible with modern ST extension system
 
-const context = SillyTavern.getContext();
-context.extensionSettings
+const {
+    extensionSettings,
+    saveSettingsDebounced,
+    eventSource,
+    event_types
+} = SillyTavern.getContext();
 
-const extensionName = "celestial-forge-tracker";
+const MODULE_NAME = "celestial-forge-tracker";
+
 const extensionFolderPath =
   new URL('.', import.meta.url).pathname.replace(/\/$/, '');
-
 
 const defaultSettings = {
     enabled: true,
@@ -17,6 +21,10 @@ const defaultSettings = {
     sync_to_simtracker: true,
     debug_mode: false
 };
+
+// Live settings reference
+let settings = null;
+
 
 // ==================== CELESTIAL FORGE TRACKER CLASS ====================
 
@@ -500,10 +508,13 @@ ${perksStr || '(none)'}`;
 let tracker = null;
 
 function loadSettings() {
-    extension_settings[extensionName] = extension_settings[extensionName] || {};
-    if (Object.keys(extension_settings[extensionName]).length === 0) {
-        Object.assign(extension_settings[extensionName], defaultSettings);
+    if (!extensionSettings[MODULE_NAME]) {
+        extensionSettings[MODULE_NAME] = structuredClone(defaultSettings);
+        saveSettingsDebounced();
     }
+
+    settings = extensionSettings[MODULE_NAME];
+    return settings;
 }
 
 function onMessageReceived(data) {
@@ -520,7 +531,7 @@ function onChatChanged() {
 jQuery(async () => {
     loadSettings();
     
-    tracker = new CelestialForgeTracker();
+    tracker = new CelestialForgeTracker(settings);
     tracker.loadState();
     
     // Expose globally
